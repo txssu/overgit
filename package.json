@@ -1,0 +1,27 @@
+{
+  "name": "overgit",
+  "version": "0.1.0",
+  "description": "Layer one git repository on top of another in a single working directory",
+  "type": "module",
+  "license": "MIT",
+  "bin": {
+    "overgit": "./bin/overgit"
+  },
+  "files": [
+    "bin",
+    "src",
+    "README.md"
+  ],
+  "engines": {
+    "bun": ">=1.1.0"
+  },
+  "scripts": {
+    "test": "bun test",
+    "typecheck": "tsc --noEmit",
+    "overgit": "bun run ./bin/overgit"
+  },
+  "devDependencies": {
+    "@types/bun": "latest",
+    "typescript": "^5.6.0"
+  }
+}
