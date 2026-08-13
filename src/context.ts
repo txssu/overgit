@@ -6,7 +6,7 @@
  * directory or a bare repo, and resolves the base's git dir the way git itself does
  * (including a `.git` *file* for linked worktrees and submodules).
  *
- * Since the overlay GIT_DIR lives at `<root>/.overgit/.git` (DESIGN.md §6.6), plain git
+ * Since the overlay GIT_DIR lives at `<root>/.overgit/.git`, plain git
  * discovery started anywhere under `<root>/.overgit/` resolves to the **overlay**, whose
  * `core.worktree=../..` makes it claim `<root>` as its work-tree. Everything below would
  * then silently treat the overlay as the base. `discover` detects that and re-resolves.
@@ -27,7 +27,7 @@ export interface Context {
   /**
    * Absolute, resolved base git dir. This is the git **common** dir: for an ordinary repo
    * it is `<root>/.git`; inside a linked worktree it is the *main* repo's `.git`, which is
-   * where `info/exclude` actually lives (measured — see DESIGN.md §6.5).
+   * where `info/exclude` actually lives (measured on git 2.55).
    */
   baseGitDir: string;
   /**
@@ -38,7 +38,8 @@ export interface Context {
   overgitDir: string;
   /**
    * `<root>/.overgit/.git`. It is a *real* git dir, not a gitfile: `git clean` only skips a
-   * directory that looks like a repository, and its test is `<dir>/.git` (DESIGN.md §6.6).
+   * directory that looks like a repository, and its test (`is_nonbare_repository_dir`) looks
+   * for `<dir>/.git`.
    * That is what keeps `git clean -xfd` from deleting the manifest and the backups.
    */
   overlayGitDir: string;
@@ -69,7 +70,7 @@ async function isFile(p: string): Promise<boolean> {
 async function overlayLooksReal(overlayGitDir: string): Promise<boolean> {
   if ((await isDir(overlayGitDir)) && (await isFile(join(overlayGitDir, "HEAD")))) return true;
 
-  // A *gitfile* at `.overgit/.git` is an equally valid overlay: measured in DESIGN.md §6.6,
+  // A *gitfile* at `.overgit/.git` is an equally valid overlay: measured on git 2.55,
   // `git clean -xfd` spares the directory and `git -C .overgit log` works, so it is healthy
   // by the only test that matters. Insisting on a real directory made every overgit command
   // report "no overlay" on a perfectly good setup, and made `doctor` unable to distinguish

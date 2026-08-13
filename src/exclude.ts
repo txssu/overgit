@@ -26,7 +26,10 @@ import type { Manifest } from "./manifest.ts";
 import { pathsOfKind, ownedPaths, comparePaths } from "./manifest.ts";
 import { gitignoreEscape } from "./paths.ts";
 
-/** Frozen marker strings — DESIGN.md §5. Do not reformat. */
+/**
+ * Marker strings, byte-exact. Do not reformat: `doctor` finds the managed block by matching
+ * these lines, so a changed one orphans every block already written to a user's repo.
+ */
 export const BEGIN_MARKER =
   "# >>> overgit managed block — do not edit (regenerate with `overgit doctor --fix`) >>>";
 export const END_MARKER = "# <<< overgit managed block <<<";
@@ -35,7 +38,7 @@ export const END_MARKER = "# <<< overgit managed block <<<";
 export const OVERGIT_DIR_PATTERN = "/.overgit/";
 
 /**
- * Lines the overlay's own `info/exclude` must contain (DESIGN.md §2).
+ * Lines the overlay's own `info/exclude` must contain.
  *
  * `/.overgit/.git/` is belt-and-braces — git refuses to track anything under a `.git`
  * directory whatever the ignore rules say — but `/.overgit/local/` is load-bearing: it is

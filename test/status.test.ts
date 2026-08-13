@@ -85,7 +85,7 @@ async function mkFixture(
     ...extra,
   });
   const repo = await upstream.clone("base");
-  // DESIGN §6.6: `.overgit/` is an ordinary git repository directory, so its GIT_DIR is
+  // `.overgit/` is an ordinary git repository directory, so its GIT_DIR is
   // `.overgit/.git`. That is what makes `git clean -xfd` in the base skip it entirely.
   await repo.git("init", "--quiet", "-b", "main", ".overgit");
   const gd = repo.path(".overgit", ".git");
@@ -274,7 +274,7 @@ describe("upstream: base HEAD versus the recorded baseBlob", () => {
   test("an upstream edit to an overridden file is `changed` and blocks `git pull`", async () => {
     const { repo, ctx, upstream } = await mkMounted();
     await upstream.changeFile("C.txt", "upstream moved C\n");
-    // The pull itself aborts (DESIGN §6.5) — fetch + reset the ref to simulate having it.
+    // The pull itself aborts on an override — fetch + reset the ref to simulate having it.
     await repo.git("fetch", "--quiet", "origin");
     const pull = await repo.gitTry("pull", "--no-rebase", "--quiet");
     expect(pull.code).not.toBe(0);

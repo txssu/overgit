@@ -102,7 +102,7 @@ afterAll(cleanupAllSandboxes);
 
 /** Minimal overlay so `discover` finds one; `bootstrap.ts` is a different builder's file. */
 async function mkOverlay(repo: Repo): Promise<Context> {
-  // DESIGN §6.6: `.overgit/` is an ordinary git repository directory.
+  // `.overgit/` is an ordinary git repository directory.
   await repo.git("init", "--quiet", "-b", "main", ".overgit");
   const gd = repo.path(".overgit", ".git");
   await repo.git("--git-dir", gd, "config", "core.worktree", "../..");

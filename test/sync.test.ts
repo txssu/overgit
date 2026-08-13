@@ -6,7 +6,7 @@
  * an interrupted run can be finished or undone, and whether the base repo can ever tell
  * that any of it happened.
  *
- * **Deviation from DESIGN.md §6, declared:** these tests drive `src/sync.ts` in process
+ * **Deviation from the harness convention, declared:** these tests drive `src/sync.ts` in process
  * rather than spawning `bin/overgit`. `src/cli/main.ts` does not exist yet, so there is no
  * CLI to spawn; the module is the only surface available. Nothing else is faked — real
  * repos in temp dirs, real `git`, real work-tree bytes, hermetic config, no network. The
@@ -527,7 +527,7 @@ describe("upstream deleted an overridden file", () => {
 });
 
 describe("upstream added a path the overlay adds (collision)", () => {
-  /** Builds the collision with a **plain** `git pull` — DESIGN.md §6.5 says it succeeds. */
+  /** Builds the collision with a **plain** `git pull`, which succeeds and overwrites. */
   async function collisionFixture(label: string): Promise<Fx> {
     const fx = await mkFixture(label, { "B.txt": "b\n" });
     await add(fx, { "A.txt": lines(10, { 2: "line 2 — overlay" }) });
@@ -570,8 +570,8 @@ describe("upstream added a path the overlay adds (collision)", () => {
     expect(await fx.base.skipWorktreePaths()).toContain("A.txt");
     expect(await fx.base.excludeLines()).not.toContain("/A.txt");
 
-    // There is no common ancestor, so a genuinely divergent file conflicts — DESIGN.md §5
-    // says so explicitly, and both sides' content is in the work-tree to reconcile.
+    // There is no common ancestor, so a genuinely divergent file conflicts, and both
+    // sides' content is in the work-tree to reconcile.
     expect(report.conflicted).toEqual(["A.txt"]);
     const merged = await fx.base.read("A.txt");
     expect(merged).toContain("line 2 — overlay");
@@ -861,7 +861,7 @@ describe("interrupted sync", () => {
 /* ------------------------------------------------------------------ the real CLI */
 
 /**
- * End-to-end through `bin/overgit`, as DESIGN.md §6 requires. These do not re-prove the
+ * End-to-end through `bin/overgit`, the way every other suite runs. These do not re-prove the
  * merge semantics above; they pin the wiring and the **frozen exit codes**: `0` done,
  * `3` conflicts or decisions pending, `4` a `--dry-run` that found work.
  */

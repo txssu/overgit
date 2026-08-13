@@ -66,7 +66,7 @@ function splitZ(s: string): string[] {
 /**
  * git's refusal to touch skip-worktree ("sparse") index entries.
  *
- * DESIGN.md §6.5 lists this as expected, correct behaviour — the base *should* refuse.
+ * This is expected, correct behaviour — the base *should* refuse.
  * It is a non-zero exit that captures nothing, so it must never read as a leak.
  */
 function isSparsityRefusal(output: string): boolean {
@@ -98,8 +98,8 @@ export async function assertBaseClean(
   ).stdout.trim();
 
   // 1. status. `-c status.showUntrackedFiles=normal -uall` on purpose: a repo config of
-  //    `status.showUntrackedFiles=no` (which DESIGN.md tells builders to set on the
-  //    *overlay*, and which is easy to set on the base by mistake) would otherwise hide
+  //    `status.showUntrackedFiles=no` (which belongs on the *overlay*, and which is easy
+  //    to set on the base by mistake) would otherwise hide
   //    every overlay-added file from this check.
   const status = await git(
     repoDir,
@@ -138,18 +138,18 @@ export async function assertBaseClean(
   //    store so the repo under test is not mutated at all, not even by a loose blob.
   //
   //    The verdict is *what got captured*, never the exit code. Measured on git 2.55:
-  //      - `core.sparseCheckout=true` (the DESIGN.md §6.5 trap): exit 0, and `M C.txt`
+  //      - `core.sparseCheckout=true` (the trap): exit 0, and `M C.txt`
   //        IS captured — a real leak behind a successful exit;
   //      - `git add -A -- <overlay-owned path>`: exit 1 ("sparsity rules"), captures
-  //        nothing — the documented §6.5 row, and not a leak at all.
+  //        nothing — the documented refusal, and not a leak at all.
   //    So a non-zero exit is only reported when it is *not* that known refusal.
   const scratch = await mkdtemp(join(await scratchParent(env), "overgit-cleancheck-"));
   try {
     const headExists =
       (await git(repoDir, ["rev-parse", "--verify", "-q", "HEAD"], env)).code === 0;
 
-    // `git add -A` with no pathspec: exactly what a user types, and exactly the
-    // DESIGN.md §6.5 row. `--sparse` is the stronger probe — it explicitly opts into
+    // `git add -A` with no pathspec: exactly what a user types, and exactly the measured
+    // row. `--sparse` is the stronger probe — it explicitly opts into
     // touching skip-worktree entries, so capturing nothing under it proves more.
     const probes: Array<{ label: string; args: string[] }> = [
       { label: "git add -A", args: ["add", "-A"] },
@@ -306,8 +306,8 @@ const OVERLAY_GITDIR_CANDIDATES: Array<{
 /**
  * Asserts the overlay survives a **real** `git clean -xfd` in the base.
  *
- * DESIGN.md §6.6: `git clean -xfd` deletes ignored *directories* wholesale, and
- * `/.overgit/` is ignored. Every other row of the §6.5 drift matrix is recoverable
+ * Measured on git 2.55: `git clean -xfd` deletes ignored *directories* wholesale, and
+ * `/.overgit/` is ignored. Every other row of the drift matrix is recoverable
  * precisely because the overlay repo still holds the bytes — so if `git clean` can delete
  * `.overgit/`, that recovery story collapses and unpushed work is gone for good.
  *
@@ -429,7 +429,7 @@ export async function assertCleanSafe(
           "",
           `  git clean removed: ${removed.length ? removed.join(", ") : "(nothing)"}`,
           "",
-          "  DESIGN.md §6.6: `git clean` skips a directory only when `<dir>/.git` resolves",
+          "  `git clean` skips a directory only when `<dir>/.git` resolves",
           "  to a real repository. Put the overlay GIT_DIR at `.overgit/.git` (a real repo,",
           "  or a gitfile whose target exists). A raw `.overgit/repo` with no `.overgit/.git`,",
           "  a dangling gitfile, or an empty `.git` directory are all deleted wholesale.",

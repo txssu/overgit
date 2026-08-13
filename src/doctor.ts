@@ -8,8 +8,10 @@
  *   * the overlay repo           — where the overlay's content actually lives,
  *   * the base repo + work-tree  — skip-worktree bits, `.git/info/exclude`, the bytes.
  *
- * Ordinary `git` in the base moves the third one behind our back (DESIGN.md §6.5 is the
- * measured matrix), and users move all three by hand. `diagnose` names the disagreement;
+ * Ordinary `git` in the base moves the third one behind our back — `git clean -xfd` removes
+ * overlay-added files, a `git pull` resurrects a whiteout or overwrites an added path (all
+ * measured on git 2.55) — and users move all three by hand. `diagnose` names the
+ * disagreement;
  * `repair` fixes the ones that can be fixed without guessing.
  *
  * ## The line between drift and work
@@ -83,11 +85,14 @@ import { isReservedPath } from "./paths.ts";
 /* ------------------------------------------------------------------ public types */
 
 /**
- * Stable problem ids. The first block is DESIGN.md §5's frozen minimum; the second is
- * additive — states the frozen list does not name but real git and real users produce.
+ * Stable problem ids — `--porcelain` output and the tests key off these strings.
+ *
+ * The first block is the original minimum: the ways the three stores can disagree on paper.
+ * The second is additive — states that only turned up once real git and real users were let
+ * near it.
  */
 export const PROBLEM_IDS = [
-  /* DESIGN.md §5 */
+  /* the original minimum */
   "no-overlay-head",
   "manifest-unreadable",
   "manifest-missing",
@@ -256,7 +261,7 @@ async function resolveOverlayGuard(ctx: Context): Promise<string | null> {
 }
 
 /**
- * DESIGN.md §6.6, measured: `git clean -xfd` removes ignored *directories* wholesale, and
+ * Measured on git 2.55: `git clean -xfd` removes ignored *directories* wholesale, and
  * `/.overgit/` is ignored. It skips `<dir>` **iff `<dir>/.git` resolves to a real
  * repository**. If that stops being true, one `git clean -xfd` in the base takes the
  * overlay repository, the manifest and every backup with it — the single drift row that is
@@ -567,7 +572,8 @@ function normaliseIgnorePattern(raw: string): string | null {
 }
 
 /**
- * overgit's local state must never enter the base's history (DESIGN.md §7). A tracked
+ * Machine-local state never enters the base's history: `.git/info/exclude` only, never
+ * `.gitignore`. That is a hard constraint, not a preference. A tracked
  * `.gitignore` naming `.overgit/` — or an overlay-added path — does exactly that: every
  * other clone of the base inherits this machine's private arrangement.
  */
@@ -697,7 +703,7 @@ export async function diagnose(ctx: Context): Promise<Problem[]> {
   const protection = await checkCleanProtection(ctx);
 
   // `Context.hasOverlay` insists on a real directory. A *gitfile* at `.overgit/.git` whose
-  // target exists is an equally valid overlay (measured — DESIGN.md §6.6), so ask again.
+  // target exists is an equally valid overlay (measured on git 2.55), so ask again.
   const hasOverlay = ctx.hasOverlay || (await resolveOverlayGuard(ctx)) !== null;
   if (!hasOverlay) {
     if (protection !== null && (await pathExists(ctx.overgitDir))) problems.push(protection);
@@ -1326,8 +1332,8 @@ async function checkExcludeBlock(ctx: Context, manifest: Manifest): Promise<Prob
 }
 
 /**
- * DESIGN.md §6.5: a base `git pull`/`git checkout` that touches an overridden path is
- * *aborted* by git ("Your local changes … would be overwritten"). That is inherent to
+ * A base `git pull`/`git checkout` that touches an overridden path is *aborted* by git
+ * ("Your local changes … would be overwritten", measured on git 2.55). That is inherent to
  * skip-worktree, so the honest thing is to name the paths before the user hits it.
  */
 async function checkPullBlocked(ctx: Context, manifest: Manifest, s: Survey): Promise<Problem[]> {

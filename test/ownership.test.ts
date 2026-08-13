@@ -84,7 +84,7 @@ interface Fixture {
  */
 async function mkFixture(files: Record<string, string> = {}): Promise<Fixture> {
   const repo = await sb.mkBaseRepo("base", { "B.txt": "base B\n", "C.txt": "base C\n", ...files });
-  // DESIGN §6.6: `.overgit/` is an ordinary git repository directory, so its GIT_DIR is
+  // `.overgit/` is an ordinary git repository directory, so its GIT_DIR is
   // `.overgit/.git`. That is what makes `git clean -xfd` in the base skip it entirely.
   await repo.git("init", "--quiet", "-b", "main", ".overgit");
   const gd = repo.path(".overgit", ".git");

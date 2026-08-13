@@ -1,7 +1,7 @@
 /**
  * Thin, paranoid wrapper around the system `git` binary.
  *
- * Design rules (see DESIGN.md §5):
+ * Design rules:
  *  - every command that offers `-z` uses it, and output is parsed NUL-delimited, because
  *    real paths contain spaces, quotes, `#`, `[`, `!` and newlines;
  *  - blob content never makes a UTF-8 round trip (`catFileBlob` / `hashObject` are bytes);
@@ -682,7 +682,7 @@ export interface MergeFileResult {
   conflicts: number;
   clean: boolean;
   /**
-   * Additive (not in DESIGN.md §5): `git merge-file` *refuses* binary input outright — it
+   * `git merge-file` *refuses* binary input outright — it
    * exits 255 with "Cannot merge binary files" even when two sides are identical. When
    * this is set, `content` is `ours` and the caller must resolve by hand.
    */

@@ -42,6 +42,3 @@ ever appended. `overgit help status` documents the field values.
   is how a fresh clone reproduces your tree.
 * Machine-local state — sync progress, backups, the lock — lives in `.overgit/local/` and is
   never committed anywhere.
-
-The measured git behaviour this design rests on — including the experiments that ruled out
-approaches which look correct and are not — is recorded in [DESIGN.md](../DESIGN.md).

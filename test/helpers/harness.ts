@@ -1,5 +1,5 @@
 /**
- * overgit integration-test harness (DESIGN.md §6).
+ * overgit integration-test harness.
  *
  * Everything a behavioural test needs, in one import:
  *
@@ -216,7 +216,7 @@ export interface OvergitRunOptions {
 
 /**
  * Spawn the real CLI. `cwd` selects the sandbox whose hermetic env is used, so this works
- * with the frozen `overgit(cwd, ...args)` signature from DESIGN.md §6.
+ * with the `overgit(cwd, ...args)` signature every test is written against.
  *
  * Resolves for any exit code, including failures — use `expectOk`/`expectFail` to assert.
  * It **rejects** only when the CLI has to be killed for exceeding `DEFAULT_TIMEOUT_MS`
@@ -327,7 +327,7 @@ export interface Repo {
   snapshot(opts?: SnapshotOptions): Promise<TreeSnapshot>;
   /** The invisibility oracle, scoped to this repo. */
   assertClean(opts?: AssertBaseCleanOptions): Promise<void>;
-  /** The `git clean -xfd` survival oracle (DESIGN.md §6.6), scoped to this repo. */
+  /** The `git clean -xfd` survival oracle, scoped to this repo. */
   assertCleanSafe(opts?: CleanSafeOptions): Promise<CleanSafeResult>;
 }
 
@@ -546,7 +546,7 @@ class RepoImpl implements Repo {
 
 /**
  * A local bare repo standing in for a network remote, plus a private working clone used
- * to publish new commits. This is how the DESIGN.md §6.5 drift matrix gets simulated
+ * to publish new commits. This is how the drift matrix gets simulated
  * without touching the network.
  */
 export interface Upstream {
@@ -909,7 +909,7 @@ export async function cleanupAllSandboxes(): Promise<void> {
 /* ------------------------------------------------------- hand-built overlay fixture */
 
 /**
- * The DESIGN.md §6.5 fixture, built with **raw git only** — no overgit involved.
+ * The standard overlay fixture, built with **raw git only** — no overgit involved.
  *
  * This is the oracle's oracle: if `assertBaseClean` says this repo is clean, the oracle
  * agrees with the measured git behaviour the whole design rests on. Other builders can
@@ -921,7 +921,7 @@ export async function cleanupAllSandboxes(): Promise<void> {
  *   B.txt  plain base file untouched
  *   C.txt  overridden      skip-worktree set, work-tree holds overlay bytes
  *   D.txt  whited out      skip-worktree set, file removed from the work-tree
- *   .overgit/.git          overlay GIT_DIR (DESIGN.md §6.6 layout)
+ *   .overgit/.git          overlay GIT_DIR
  *   .overgit/…             manifest + local state, excluded via `.git/info/exclude`
  */
 export interface ManualOverlay {
@@ -993,7 +993,7 @@ export async function mkManualOverlay(
   await base.git("update-index", "--skip-worktree", "D.txt");
   await base.rm("D.txt");
 
-  // Overlay private state, in the DESIGN.md §6.6 layout: the overlay GIT_DIR is
+  // Overlay private state: the overlay GIT_DIR is
   // `.overgit/.git`, so `.overgit/` *is* an ordinary git repo directory.
   //
   // This is load-bearing, not cosmetic. Measured on git 2.55: `git clean -xfd` skips a

@@ -2,7 +2,7 @@
  * `core.sparseCheckout=true` in the base is the one configuration that silently defeats the
  * whole mechanism.
  *
- * DESIGN.md §6.5 records the measurement: with sparse checkout on, git *clears* the
+ * Measured on git 2.55: with sparse checkout on, git *clears* the
  * skip-worktree bit on any file that is present in the work-tree. Every override then shows
  * up as an ordinary modification and the next `git add -A` in the base commits it — a total,
  * silent invisibility failure. It is why overgit never enables sparse checkout itself, but a

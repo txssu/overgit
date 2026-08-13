@@ -10,8 +10,8 @@
  */
 
 /**
- * Result of running a command. The first three fields are the frozen `CmdResult`
- * shape from DESIGN.md §6; the rest are extras that make failures debuggable.
+ * Result of running a command. The first three fields are the `CmdResult` shape every test
+ * relies on; the rest are extras that make failures debuggable.
  */
 export interface CmdResult {
   stdout: string;

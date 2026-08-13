@@ -5,7 +5,7 @@
  *
  *  1. **Idempotency.** A second consecutive run reports `changed === false` and no
  *     non-`noop` action. "Fresh clone + one command reproduces the tree" rests on it.
- *  2. **Recovery.** Every row of the DESIGN.md §6.5 drift matrix — `git checkout -- .`,
+ *  2. **Recovery.** Every row of the measured drift matrix — `git checkout -- .`,
  *     `git reset --hard`, `git clean -xfd`, `git stash -a`, and a `git pull` that
  *     resurrects a whiteout or clobbers an overlay-added file — is repaired by one
  *     `applyState`, byte for byte, because overlay content lives in the overlay repo and
@@ -90,7 +90,7 @@ interface Fixture {
 }
 
 /**
- * The DESIGN.md §6.5 layout, built with the real engine:
+ * The standard overlay fixture, built with the real engine:
  *   `A.txt` overlay-added, `C.txt` overridden, `D.txt` whited out, `B.txt` plain base file.
  * Cloned from a local bare "remote" so `git pull` is a real operation.
  */
@@ -102,7 +102,7 @@ async function mkFixture(extra: Record<string, string> = {}): Promise<Fixture> {
     ...extra,
   });
   const repo = await upstream.clone("base");
-  // DESIGN §6.6: `.overgit/` is an ordinary git repository directory, so its GIT_DIR is
+  // `.overgit/` is an ordinary git repository directory, so its GIT_DIR is
   // `.overgit/.git`. That is what makes `git clean -xfd` in the base skip it entirely.
   await repo.git("init", "--quiet", "-b", "main", ".overgit");
   const gd = repo.path(".overgit", ".git");
@@ -215,7 +215,7 @@ describe("idempotency", () => {
 
 /* ------------------------------------------------------------------ the drift matrix */
 
-describe("recovery from base git operations (DESIGN §6.5)", () => {
+describe("recovery from base git operations", () => {
   test("git checkout -- . : overlay bytes survive, apply is a no-op", async () => {
     const { repo, ctx } = await mkFixture();
     await repo.git("checkout", "--", ".");
@@ -239,7 +239,7 @@ describe("recovery from base git operations (DESIGN §6.5)", () => {
     const rescued = (await applyState(ctx)).backups[0]!;
     expect(rescued).toStartWith(".overgit/local/backups/");
 
-    // DESIGN §6.6: `.overgit/` is a git repository directory, so `clean` skips it. The
+    // `.overgit/` is a git repository directory, so `clean` skips it. The
     // harness oracle runs a real `git clean -xfd` against a throwaway copy and asserts
     // `.overgit/` comes through byte-identical and still usable — overlay git internals,
     // `local/` and the rescued bytes included.
@@ -317,7 +317,7 @@ describe("recovery from base git operations (DESIGN §6.5)", () => {
     const { repo, ctx, upstream } = await mkFixture();
     await upstream.changeFile("D.txt", "upstream changed D\n");
     await repo.git("pull", "--no-rebase", "--quiet");
-    // Measured in DESIGN §6.5: the pull succeeds and D.txt comes back.
+    // Measured on git 2.55: the pull succeeds and D.txt comes back.
     expect(await pathExists(repo.path("D.txt"))).toBe(true);
 
     const r = await applyState(ctx);

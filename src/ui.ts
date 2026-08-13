@@ -10,7 +10,7 @@
  *    escape sequence. Every path that reaches a human goes through `displayPath`, which
  *    C-quotes exactly the way `git` does. Machine output (`--porcelain`) is raw and
  *    NUL-terminated instead.
- *  - **One error shape**, frozen in DESIGN.md §5:
+ *  - **One error shape**, everywhere:
  *
  *        error: <one line that names the offending path>
  *          hint: <what to run / what to do>

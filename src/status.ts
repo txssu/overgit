@@ -71,13 +71,14 @@ export interface MergedStatus {
    */
   problems: number;
 
-  /* Additive (DESIGN.md §6.5 requires status to report these; the frozen shape had no field). */
+  /* Additive: the states a base `git` command can leave behind, which status must report. */
 
   /** True when `.overgit/local/detached` exists, i.e. the overlay is unmounted. */
   detached: boolean;
   /**
    * Overridden paths whose upstream moved. A base `git pull` or `git checkout` that touches
-   * one of these **aborts** — measured on git 2.55, DESIGN.md §6.5 — so the user needs
+   * one of these **aborts** ("Your local changes … would be overwritten by merge", measured
+   * on git 2.55) — so the user needs
    * `overgit detach` first. Named so the CLI can print them.
    */
   pullBlocked: string[];

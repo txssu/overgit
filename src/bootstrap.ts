@@ -17,8 +17,8 @@
  * filled with `read-tree` (which does not touch the work-tree), and every byte that reaches
  * the work-tree is written by `applyState`, one path at a time, with backup-on-surprise.
  *
- * **`detach` / `attach`** are the escape hatch for the measured limitation in DESIGN.md
- * §6.5: git aborts `git pull` and `git checkout <branch>` when upstream touches a file the
+ * **`detach` / `attach`** are the escape hatch for the one measured limitation of
+ * skip-worktree: git aborts `git pull` and `git checkout <branch>` when upstream touches a file the
  * overlay overrides. `detach` turns the work-tree back into a byte-exact pristine base
  * checkout, `attach` (`applyState` plus clearing the marker) puts the overlay back.
  *
@@ -532,7 +532,7 @@ export async function cloneOverlay(opts: CloneOptions): Promise<CloneResult> {
       // A half-made repo with no HEAD holds nothing recoverable: `discover` does not
       // consider it an overlay, and neither do we. Removing it here rather than before the
       // clone keeps the window in which `.overgit/.git` is absent — and therefore
-      // `.overgit/` is not protected from `git clean -xfd` (DESIGN.md §6.6) — down to the
+      // `.overgit/` is not protected from `git clean -xfd` — down to the
       // gap between these two syscalls.
       if (await pathExists(probe.overlayGitDir)) {
         await fs.rm(probe.overlayGitDir, { recursive: true, force: true });
@@ -1081,7 +1081,7 @@ function hookBlockLines(hook: HookName, fb: { exe: string; script: string }): st
     'if [ "$overgit_hook_ok" = 1 ]; then',
     "\tovergit_top=$(git rev-parse --show-toplevel 2>/dev/null) || overgit_top=",
     '\t[ -n "$overgit_top" ] || overgit_top=$PWD',
-    // `.overgit/.git` is the overlay GIT_DIR (DESIGN.md §6.6) and may legitimately be a
+    // `.overgit/.git` is the overlay GIT_DIR and may legitimately be a
     // gitfile, so this tests for existence, not for a `HEAD` inside a directory.
     '\tif [ -e "$overgit_top/.overgit/.git" ]; then',
     '\t\tif ! (cd "$overgit_top" && overgit_hook_run apply >/dev/null); then',

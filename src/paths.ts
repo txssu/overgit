@@ -45,7 +45,7 @@ export function isReservedPath(repoPath: string): boolean {
 /**
  * Throws when `repoPath` is not a shape overgit may own.
  *
- * Beyond DESIGN.md's list this also rejects:
+ * Beyond the obvious (`.git`, `.overgit`, escaping the work-tree) this also rejects:
  *  - a `.git` segment *anywhere* in the path (a nested repo or submodule's internals), and
  *  - a NUL byte, which is not merely invalid but actively dangerous: `git.ts` feeds paths
  *    to `update-index --stdin -z` and `add --pathspec-file-nul`, where NUL is the record

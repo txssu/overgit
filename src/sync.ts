@@ -85,8 +85,8 @@ export type Situation =
    * Deliberately NOT `conflict`. There are no conflict markers to write into a binary file
    * or a symlink target, so the work-tree keeps the overlay's bytes unchanged — which means
    * a marker-based resolution flow would let `sync --continue` stage those bytes and advance
-   * the fork point, silently discarding upstream's revision and recording it as merged.
-   * DESIGN.md §6.7 names that exact sequence as a data-loss bug.
+   * the fork point, silently discarding upstream's revision and recording it as merged —
+   * data loss dressed up as success.
    */
   | "binary-conflict"
   /** delete: base content moved; the whiteout is re-applied and `baseBlob` advances */
@@ -103,7 +103,7 @@ export interface PlanItem {
   /** the base's current blob for the path (`null` when the base no longer tracks it) */
   toBlob: string | null;
 
-  /* ---- additive vs DESIGN.md §5 (all optional, so the frozen shape still type-checks) ---- */
+  /* ---- additive: all optional, so an older caller still type-checks ---- */
 
   /** True when the content cannot be text-merged (binary, or a symlink whose target moved). */
   binary?: boolean;

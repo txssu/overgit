@@ -11,8 +11,8 @@
  *                            an empty dir left behind after a whiteout is a real bug)
  *   other <kind>             fifo/socket/device
  *
- * Excluded: `.git` at any depth — which covers the overlay GIT_DIR at `.overgit/.git`
- * (DESIGN.md §6.6) whether it is a directory or a gitfile — plus `.overgit/local` and the
+ * Excluded: `.git` at any depth — which covers the overlay GIT_DIR at `.overgit/.git`,
+ * whether it is a directory or a gitfile — plus `.overgit/local` and the
  * legacy `.overgit/repo`. `.overgit/manifest.json` *is* part of the snapshot: it is
  * overlay-tracked portable state, and tests need to see it move.
  */

@@ -3,7 +3,7 @@
  * required to exist (other builders are writing it in parallel), except for the two
  * cases that deliberately prove a missing CLI surfaces as a readable failure.
  *
- * The important one is "assertBaseClean agrees with git": the DESIGN.md §6.5 fixture is
+ * The important one is "assertBaseClean agrees with git": the standard overlay fixture is
  * built by hand with raw git commands, and the oracle must call it clean. If that ever
  * breaks, every invisibility claim in the project is unverified.
  */
@@ -340,7 +340,7 @@ describe("assertBaseClean", () => {
 
   test("the real `git add -A` check has teeth that status/diff do not", async () => {
     // Measured on git 2.55: with `status.showUntrackedFiles=no` set on the *base* (a
-    // plausible bug — DESIGN.md §2 tells builders to set it on the *overlay*), an
+    // plausible bug — it belongs on the *overlay*), an
     // overlay-added file is invisible to `git status --porcelain`, `git diff` and
     // `git diff --cached`, yet a real `git add -A` stages it. If overgit ever shipped
     // that bug, `git add -A && git commit` in the base would commit overlay content.
@@ -362,8 +362,8 @@ describe("assertBaseClean", () => {
 
   test("a `git add` that exits non-zero on sparsity rules is NOT a leak", async () => {
     // Measured on git 2.55: `git add -A -- <overlay-owned path>` exits 1 with the
-    // "sparse-checkout" refusal and captures nothing. That is the DESIGN.md §6.5 row
-    // "explicit `git add C.txt` -> refused, index untouched" — correct behaviour, not a
+    // "sparse-checkout" refusal and captures nothing: explicit `git add C.txt` is refused
+    // and the index is untouched — correct behaviour, not a
     // leak. The oracle must judge by what was captured, never by the exit code.
     await withSandbox("clean-sparsity", async (sb) => {
       const ov = await mkManualOverlay(sb);
@@ -379,7 +379,7 @@ describe("assertBaseClean", () => {
   });
 
   test("catches a leak that `git add -A` hides behind exit code 0", async () => {
-    // DESIGN.md §6.5 consequence 1: never set `core.sparseCheckout=true` on the base.
+    // Never set `core.sparseCheckout=true` on the base.
     // Measured: with it set, `git add -A` exits **0** and stages the override's overlay
     // bytes. Exit code says success; the capture check is the only thing that sees it.
     await withSandbox("clean-sparsecheckout", async (sb) => {
@@ -416,9 +416,9 @@ describe("assertBaseClean", () => {
   });
 });
 
-/* ============================================ the DESIGN.md §6.5 oracle test */
+/* ============================================ the oracle test */
 
-describe("assertBaseClean vs the hand-built overlay (DESIGN.md §6.5)", () => {
+describe("assertBaseClean vs the hand-built overlay", () => {
   test("a skip-worktree override + whiteout + excluded add reads as clean", async () => {
     await withSandbox("oracle", async (sb) => {
       const ov = await mkManualOverlay(sb);
@@ -540,7 +540,7 @@ describe("assertBaseClean vs the hand-built overlay (DESIGN.md §6.5)", () => {
   });
 
   test("assertCleanSafe fails loudly on the unprotected raw-gitdir layout", async () => {
-    // DESIGN.md §6.6: a raw `.overgit/repo` with no `.overgit/.git` is deleted wholesale.
+    // A raw `.overgit/repo` with no `.overgit/.git` is deleted wholesale by `git clean -xfd`.
     await withSandbox("cleansafe-raw", async (sb) => {
       const ov = await mkManualOverlay(sb);
       await ov.base.rm(".overgit/.git");
@@ -548,7 +548,8 @@ describe("assertBaseClean vs the hand-built overlay (DESIGN.md §6.5)", () => {
 
       const msg = await messageOfRejection(() => assertCleanSafe(ov.base.dir));
       expect(msg).toContain("DELETED the whole .overgit/ directory");
-      expect(msg).toContain("§6.6");
+      // The message must still explain the rule, not just report the damage.
+      expect(msg).toContain("skips a directory only when");
       // The real repo is still intact — only the throwaway copy was destroyed.
       expect(await ov.base.exists(".overgit/repo")).toBe(true);
       expect(await ov.base.exists("A.txt")).toBe(true);
@@ -664,7 +665,7 @@ describe("snapshotTree + diffTrees", () => {
       await writeFile(join(dir, "vendor", "nested", ".git", "HEAD"), "x\n");
       await mkdir(join(dir, ".overgit", "repo"), { recursive: true });
       await writeFile(join(dir, ".overgit", "repo", "HEAD"), "x\n");
-      // DESIGN.md §6.6 layout: the overlay GIT_DIR is `.overgit/.git`, covered by the
+      // The overlay GIT_DIR is `.overgit/.git`, covered by the
       // `.git` basename rule whether it is a directory or a gitfile.
       await mkdir(join(dir, ".overgit", ".git", "objects"), { recursive: true });
       await writeFile(join(dir, ".overgit", ".git", "HEAD"), "ref: refs/heads/main\n");

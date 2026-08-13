@@ -118,7 +118,7 @@ async function override(fx: Fx, files: Record<string, string>): Promise<void> {
 /**
  * The `overgit detach` → `git pull` → `overgit attach` dance.
  *
- * DESIGN.md §6.5: a plain `git pull` **aborts** when upstream touched an overridden file,
+ * A plain `git pull` **aborts** when upstream touched an overridden file,
  * so this is the only way a base can actually move past an override.
  */
 async function detachedPull(fx: Fx): Promise<void> {
@@ -381,7 +381,7 @@ describe("merge honesty in awkward shapes", () => {
     // A DECISION, not a conflict. There are no markers to write into a binary file, so a
     // marker-based resolution flow has no trustworthy "I resolved it" signal — and
     // `sync --continue` would stage the untouched overlay bytes and advance the fork point,
-    // silently discarding upstream's revision while recording it as merged (DESIGN §6.7).
+    // silently discarding upstream's revision while recording it as merged.
     const plan = await planSync(fx.ctx);
     expect(plan.conflicts).toHaveLength(0);
     expect(plan.needsDecision).toHaveLength(1);

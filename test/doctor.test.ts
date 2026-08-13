@@ -4,12 +4,12 @@
  * The fixture is built with the real modules (`ownership.ts`) and the damage is applied
  * with **raw git** or raw filesystem calls, never with overgit, so every scenario here is
  * a state a user can genuinely land in. `test/drift.test.ts` is the systematic table of
- * DESIGN.md §6.5 damage; this file covers the metadata, config and judgement calls —
+ * drift-matrix damage; this file covers the metadata, config and judgement calls —
  * above all the line between *drift* (repair it) and *uncommitted work* (never touch it).
  *
  * These tests drive `diagnose`/`repair` directly rather than spawning `bin/overgit`: the
- * CLI (`src/cli/**`, owned by another builder) does not exist yet, and the frozen contract
- * for doctor in DESIGN.md §5 is the module API. Everything *around* the module — the
+ * CLI (`src/cli/**`, owned by another builder) does not exist yet, and doctor's contract is
+ * the module API. Everything *around* the module — the
  * sandbox, the fixtures, the base-invisibility oracle — is the real harness.
  */
 
@@ -113,7 +113,7 @@ export interface Fixture {
 }
 
 /**
- * The DESIGN.md §6.5 layout, built with the real ownership engine:
+ * The standard overlay fixture, built with the real ownership engine:
  *
  *   A.txt         overlay `add`
  *   B.txt         plain base file, untouched
@@ -129,7 +129,7 @@ async function buildFixture(label: string): Promise<Fixture> {
     const upstream = await sb.mkUpstream("upstream", BASE_FILES);
     const base = await upstream.clone("base");
 
-    // The overlay repo, exactly as `overgit init` will build it (DESIGN.md §2).
+    // The overlay repo, exactly as `overgit init` will build it.
     await base.git("init", "--bare", "-b", "main", base.path(".overgit/.git"));
     const cfg = ".overgit/.git/config";
     await base.git("config", "--file", cfg, "core.bare", "false");
@@ -1080,7 +1080,7 @@ describe("contract", () => {
     });
   });
 
-  test("every id in DESIGN.md §5's frozen list exists", () => {
+  test("every id in the frozen list exists", () => {
     const frozen: ProblemId[] = [
       "no-overlay-head",
       "manifest-unreadable",

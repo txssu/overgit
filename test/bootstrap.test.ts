@@ -1,5 +1,5 @@
 /**
- * Bootstrap integration tests (DESIGN.md §5 `src/bootstrap.ts`, §6.5 detach/attach).
+ * Bootstrap integration tests: `src/bootstrap.ts`, including detach/attach.
  *
  * Everything here drives overgit **out of process**, the way a user does. When
  * `bin/overgit` loads, that is what runs; while `src/cli/**` is still being written the
@@ -55,7 +55,7 @@ import { assertCleanSafe } from "./helpers/clean.ts";
  * takes over and every assertion below applies to it instead.
  *
  * It is deliberately a *spawned process*: the interruption test has to be able to `kill -9`
- * a bootstrap half way through, and the error rendering matches DESIGN.md's frozen shape so
+ * a bootstrap half way through, and the error rendering matches the CLI's shape so
  * stderr assertions hold for both runners.
  */
 const DRIVER_SOURCE = `
@@ -237,7 +237,7 @@ interface Fixture {
 
 /**
  * A base clone with an overlay that overrides `C.txt`, whites out `D.txt` and adds
- * `A.txt`, pushed to a bare "remote". This is the DESIGN.md §6.5 fixture, built with the
+ * `A.txt`, pushed to a bare "remote". This is the standard overlay fixture, built with the
  * real commands rather than by hand.
  */
 async function mkFixture(label: string): Promise<Fixture> {
@@ -283,7 +283,7 @@ describe("overgit init", () => {
         const r = await ogOk(base.dir, "init");
         stderrIsQuiet(r);
 
-        // DESIGN.md §6.6: the overlay GIT_DIR is `.overgit/.git`, a *real* repository, so
+        // The overlay GIT_DIR is `.overgit/.git`, a *real* repository, so
         // `git clean -xfd` cannot destroy it.
         expect(await base.exists(".overgit/.git/HEAD")).toBe(true);
         expect(await base.exists(".overgit/manifest.json")).toBe(true);
@@ -699,7 +699,7 @@ describe("overgit detach / attach", () => {
 
         expectOk(await og(f.base.dir, "detach"));
 
-        // The marker DESIGN.md §6.5 froze, so `status`/`doctor` can report the state.
+        // The marker `status`/`doctor` read to report the state.
         expect(await f.base.exists(".overgit/local/detached")).toBe(true);
 
         // *Pristine* means: indistinguishable from a plain `git clone` of the base.
@@ -761,7 +761,7 @@ describe("overgit detach / attach", () => {
   );
 
   test(
-    "detach unblocks a `git pull` that git refuses to run (DESIGN.md §6.5)",
+    "detach unblocks a `git pull` that git refuses to run",
     async () => {
       const f = await mkFixture("detach-unblocks-pull");
       try {
@@ -904,7 +904,7 @@ describe("overgit hooks", () => {
         const healthy = await f.base.snapshot();
 
         // Measured drift row: `git clean -xfd` removes overlay-*added* files (they are
-        // ignored) but leaves `.overgit/` alone (DESIGN.md §6.6).
+        // ignored) but leaves `.overgit/` alone.
         await f.base.git("clean", "-xfd");
         expect(await f.base.exists("A.txt")).toBe(false);
         expect(await f.base.exists(".overgit/.git/HEAD")).toBe(true);

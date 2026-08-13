@@ -61,10 +61,9 @@ import { dirname, join } from "node:path";
 /* ------------------------------------------------------------------ public types */
 
 /**
- * Additive vs DESIGN.md §5: `from` may also be the path's previous overlay kind (a
- * whiteout being re-taken was never "base" or "untracked"), and `to` may be `"none"`
- * (`restoreToBase` and un-adding remove ownership; the frozen union had no way to say so).
- * Both widen the original types, so consumers written against the contract still compile.
+ * `from` may be the path's previous overlay kind — a whiteout being re-taken was never
+ * "base" or "untracked" — and `to` may be `"none"`, because `restoreToBase` and un-adding
+ * remove ownership rather than moving it.
  */
 export type OwnershipTarget = Kind | "none";
 
@@ -332,7 +331,7 @@ interface Snapshot {
  * `core.sparseCheckout=true`, git *clears* the skip-worktree bit on any such file that is
  * present in the work-tree — so the moment the user runs `git status`, every override
  * becomes a visible modification and the next `git add -A` sweeps it into the base's
- * history. Measured; it is why DESIGN §6.5 forbids overgit from enabling sparse checkout
+ * history. Measured; it is why overgit never enables sparse checkout
  * itself, but a user may already have it on for their own reasons.
  *
  * There is no way to provide invisibility in that mode, so the honest response is to refuse

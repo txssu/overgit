@@ -47,8 +47,8 @@ async function initRepo(dir: string): Promise<void> {
 
 /**
  * Build an overlay exactly the way bootstrap will: a real git dir at `<root>/.overgit/.git`
- * with `core.worktree=../..`, which is what makes `git clean -xfd` skip it (DESIGN.md §6.6)
- * and what creates the discovery hazard these tests pin down.
+ * with `core.worktree=../..`, which is what makes `git clean -xfd` skip it and what creates
+ * the discovery hazard these tests pin down.
  */
 async function makeOverlay(repoRoot: string): Promise<string> {
   const gitDir = join(repoRoot, ".overgit", ".git");
