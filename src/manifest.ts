@@ -30,7 +30,8 @@ export interface Manifest {
 
 export const MANIFEST_VERSION = 1 as const;
 
-const KINDS = ["add", "override", "delete"] as const;
+/** Every entry kind, in the order `overgit list --kind` documents them. */
+export const KINDS = ["add", "override", "delete"] as const;
 export type Kind = Entry["kind"];
 
 const encoder = new TextEncoder();
@@ -137,18 +138,6 @@ export function ownedPaths(m: Manifest): string[] {
 
 export function pathsOfKind(m: Manifest, kind: Kind): string[] {
   return ownedPaths(m).filter((p) => m.entries[p]!.kind === kind);
-}
-
-/** The base blob an override/whiteout forked from, or `null` for `add` entries. */
-export function baseBlobOf(m: Manifest, p: string): string | null {
-  const e = entryOf(m, p);
-  if (!e || e.kind === "add") return null;
-  return e.baseBlob;
-}
-
-/** Paths whose mechanism is a skip-worktree bit in the base (`override` + `delete`). */
-export function skipWorktreeCandidates(m: Manifest): string[] {
-  return ownedPaths(m).filter((p) => m.entries[p]!.kind !== "add");
 }
 
 /* ------------------------------------------------------------------ serialisation */
@@ -289,6 +278,9 @@ function stripBom(s: string): string {
 
 /* ------------------------------------------------------------------ file i/o */
 
+/** Repo-relative path of the manifest — it is tracked *by the overlay*, so it has one. */
+export const MANIFEST_REPO_PATH = ".overgit/manifest.json";
+
 export async function readManifest(ctx: Context): Promise<Manifest> {
   const file = Bun.file(ctx.manifestPath);
   let text: string;
@@ -324,4 +316,30 @@ export async function writeManifest(ctx: Context, m: Manifest): Promise<void> {
       cause: e,
     });
   }
+}
+
+/**
+ * Stage the manifest into the overlay index without touching the work-tree copy.
+ *
+ * Staging goes through hash-object + cacheinfo rather than `git add` so it works even when
+ * a `.gitignore` in the work-tree names `.overgit/` — `git add` would refuse that, plumbing
+ * does not care.
+ */
+export async function stageManifest(ctx: Context, m: Manifest): Promise<void> {
+  const bytes = new TextEncoder().encode(serializeManifest(m));
+  const oid = await ctx.overlay.hashObject(bytes, { write: true });
+  await ctx.overlay.updateIndexCacheinfo("100644", oid, MANIFEST_REPO_PATH);
+}
+
+/**
+ * Write the manifest and stage it into the overlay index in the same breath.
+ *
+ * The manifest is the portable half of the overlay's state, so leaving it only in the
+ * work-tree would break the same invariant file content does: a `git clean -xfd` in the
+ * base cannot reach `.overgit/`, but an interrupted `overgit commit` or a stray
+ * `git checkout` in the *overlay* could.
+ */
+export async function persistManifest(ctx: Context, m: Manifest): Promise<void> {
+  await writeManifest(ctx, m);
+  await stageManifest(ctx, m);
 }

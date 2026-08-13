@@ -313,11 +313,6 @@ export function renderError(e: unknown, color = false): string[] {
   return out;
 }
 
-/** True when this failure is git refusing to overwrite an override (DESIGN.md §6.5). */
-export function looksLikeCheckoutAbort(e: unknown): boolean {
-  return e instanceof GitError && CHECKOUT_ABORT_RE.test(e.stderr);
-}
-
 /* ------------------------------------------------------------------ layout */
 
 /**

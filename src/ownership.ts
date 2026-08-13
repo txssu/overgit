@@ -30,25 +30,28 @@
  * the repo exactly as it found it.
  */
 
-import { OvergitError, pathError } from "./errors.ts";
+import { OvergitError, ioError, pathError } from "./errors.ts";
 import type { Context } from "./context.ts";
+import { BACKUP_REL } from "./context.ts";
 import type { IndexEntry } from "./git.ts";
-import { GitError, literalPathspec } from "./git.ts";
+import { GitError, SUPPORTED_MODES, contentIsOid, indexMap, literalPathspec } from "./git.ts";
+import type { WorktreeState } from "./files.ts";
+import { pruneEmptyParents } from "./files.ts";
 import {
   toRepoPath,
   isReservedPath,
   gitignoreEscape,
   gitignorePatternIsApproximate,
 } from "./paths.ts";
-import type { Entry, Kind, Manifest } from "./manifest.ts";
+import type { Kind, Manifest } from "./manifest.ts";
 import {
+  MANIFEST_REPO_PATH,
   cloneManifest,
   comparePaths,
   entryOf,
   ownedPaths,
+  persistManifest,
   readManifest,
-  serializeManifest,
-  writeManifest,
 } from "./manifest.ts";
 import { ensureOverlayExcludes, syncExcludeBlock } from "./exclude.ts";
 
@@ -128,33 +131,12 @@ export interface ApplyOptions {
 
 /* ------------------------------------------------------------------ work-tree primitives */
 
-type FileKind = "absent" | "file" | "symlink" | "dir" | "other";
-
-interface WorktreeState {
-  kind: FileKind;
-  /** Git mode implied by the work-tree entry, or `null` when there is no file. */
-  mode: "100644" | "100755" | "120000" | null;
-  /** File bytes, or the symlink target's bytes. `null` for absent/dir/other. */
-  content: Uint8Array | null;
-}
-
-const enc = new TextEncoder();
-
-/** Git's blob OID for `bytes`, in whichever algorithm `likeOid` is written in. */
-function blobOidLike(bytes: Uint8Array, likeOid: string): string {
-  const algo = likeOid.length === 64 ? "sha256" : "sha1";
-  const h = new Bun.CryptoHasher(algo);
-  h.update(enc.encode(`blob ${bytes.byteLength}\0`));
-  h.update(bytes);
-  return h.digest("hex");
-}
-
-function contentIsOid(content: Uint8Array | null, oid: string | null | undefined): boolean {
-  if (content === null || !oid) return false;
-  return blobOidLike(content, oid) === oid;
-}
-
-/** Reads a work-tree entry without ever following a symlink. */
+/**
+ * Reads a work-tree entry without ever following a symlink.
+ *
+ * Unlike `doctor.ts`'s reader, a failed read is an error here rather than a partial answer:
+ * ownership is about to write, and acting on a half-read entry is how content gets lost.
+ */
 async function readWorktree(abs: string): Promise<WorktreeState> {
   let st: import("node:fs").Stats;
   try {
@@ -183,14 +165,6 @@ async function readWorktree(abs: string): Promise<WorktreeState> {
     mode: (st.mode & 0o111) !== 0 ? "100755" : "100644",
     content: new Uint8Array(buf),
   };
-}
-
-function ioError(path: string, e: unknown): OvergitError {
-  return new OvergitError("IO_FAILED", `cannot access ${path}: ${(e as Error).message}`, {
-    hint: "check the path's permissions",
-    paths: [path],
-    cause: e,
-  });
 }
 
 /** A scratch directory inside `.overgit/local/` so temp files are never visible to the base. */
@@ -256,28 +230,6 @@ async function writeWorktreeEntry(
 }
 
 /** Remove a work-tree entry (file, symlink, or — only when asked — a directory tree). */
-/**
- * Drop directories that only existed to hold the file we just removed.
- *
- * git cannot represent an empty directory, so after whiting out everything under `docs/`
- * the merged view should have no `docs/` at all — leaving an empty husk makes the tree
- * differ from what a fresh `overgit clone` produces, which would break the round-trip.
- * `rmdir` refuses a non-empty directory, so this can never touch anything still in use
- * (including untracked files the user put there).
- */
-async function pruneEmptyParents(root: string, repoPath: string): Promise<void> {
-  let rel = dirname(repoPath);
-  while (rel !== "" && rel !== "." && rel !== "/") {
-    if (rel === ".overgit" || rel.startsWith(".overgit/")) break;
-    try {
-      await fs.rmdir(join(root, rel));
-    } catch {
-      break; // not empty, or already gone
-    }
-    rel = dirname(rel);
-  }
-}
-
 async function removeWorktreeEntry(abs: string, allowDir: boolean): Promise<void> {
   try {
     await fs.rm(abs, { force: true, recursive: allowDir });
@@ -287,8 +239,6 @@ async function removeWorktreeEntry(abs: string, allowDir: boolean): Promise<void
 }
 
 /* ------------------------------------------------------------------ backups */
-
-const BACKUP_REL = ".overgit/local/backups";
 
 /**
  * Rescue bytes to `.overgit/local/backups/<counter>-<slug>` and append a line to
@@ -437,12 +387,6 @@ function assertNotSubmodule(s: Snapshot, p: string): void {
   }
 }
 
-function indexMap(entries: IndexEntry[]): Map<string, IndexEntry> {
-  const m = new Map<string, IndexEntry>();
-  for (const e of entries) if (e.stage === 0) m.set(e.path, e);
-  return m;
-}
-
 async function snapshot(ctx: Context, m?: Manifest): Promise<Snapshot> {
   const manifest = m ?? (await readManifest(ctx));
   const [baseEntries, overlayEntries, hasHead] = await Promise.all([
@@ -481,11 +425,6 @@ async function overlayDirtyFor(ctx: Context, s: Snapshot, p: string): Promise<bo
   return !contentIsOid(wt.content, idx.oid);
 }
 
-const SUPPORTED_MODES = new Set(["100644", "100755", "120000"]);
-
-/** Repo-relative path of the manifest — it is tracked *by the overlay*, so it has one. */
-const MANIFEST_REPO_PATH = ".overgit/manifest.json";
-
 /**
  * Every public entry point starts here.
  *
@@ -517,23 +456,6 @@ function asOvergitError(e: unknown, what: string): unknown {
     });
   }
   return e;
-}
-
-/**
- * Write the manifest and stage it into the overlay index in the same breath.
- *
- * The manifest is the portable half of the overlay's state, so leaving it only in the
- * work-tree would break the same invariant file content does: a `git clean -xfd` in the
- * base cannot reach `.overgit/`, but an interrupted `overgit commit` or a stray
- * `git checkout` in the *overlay* could. Staging goes through hash-object + cacheinfo
- * rather than `git add` so it works even when a `.gitignore` in the work-tree names
- * `.overgit/` — `git add` would refuse that, plumbing does not care.
- */
-async function persistManifest(ctx: Context, m: Manifest): Promise<void> {
-  await writeManifest(ctx, m);
-  const bytes = enc.encode(serializeManifest(m));
-  const oid = await ctx.overlay.hashObject(bytes, { write: true });
-  await ctx.overlay.updateIndexCacheinfo("100644", oid, MANIFEST_REPO_PATH);
 }
 
 /**
@@ -1095,12 +1017,7 @@ interface RestorePlan {
  * overrides both, always rescuing the work-tree bytes first.
  */
 /** Expand directory inputs into the owned paths beneath them. */
-async function expandOwnedInputs(
-  ctx: Context,
-  s: Snapshot,
-  inputs: string[],
-  skipped: { path: string; reason: string }[],
-): Promise<string[]> {
+async function expandOwnedInputs(s: Snapshot, inputs: string[]): Promise<string[]> {
   const out: string[] = [];
   const seen = new Set<string>();
   for (const input of inputs) {
@@ -1146,7 +1063,7 @@ export async function restoreToBase(
   // the three is a papercut users hit immediately. A restored directory is expanded from the
   // manifest — the work-tree cannot be the source, since whited-out paths are absent from it
   // and those are exactly the ones a `restore <dir>` most needs to bring back.
-  const expanded = await expandOwnedInputs(ctx, s, inputs, skipped);
+  const expanded = await expandOwnedInputs(s, inputs);
 
   for (const p of expanded) {
     const existing = entryOf(s.manifest, p);

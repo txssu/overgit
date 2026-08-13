@@ -247,6 +247,32 @@ export async function discover(
   };
 }
 
+// ── machine-local state files ───────────────────────────────────────────────────────
+
+/**
+ * Everything under `.overgit/local/` is machine-local: never tracked by the overlay, and
+ * rebuildable from the manifest. The three files below are the ones other modules test for,
+ * so their names live here rather than being spelled out at each call site.
+ */
+
+/** The advisory lock, held for the duration of any command that writes. */
+export function lockPath(ctx: Context): string {
+  return join(ctx.localDir, "lock");
+}
+
+/** Present while a sync is unfinished; holds everything `overgit sync --abort` needs. */
+export function syncStatePath(ctx: Context): string {
+  return join(ctx.localDir, "sync-state.json");
+}
+
+/** Present while `overgit detach` has the overlay unmounted. */
+export function detachMarkerPath(ctx: Context): string {
+  return join(ctx.localDir, "detached");
+}
+
+/** Root-relative directory holding rescued work-tree bytes. Reported to the user as-is. */
+export const BACKUP_REL = ".overgit/local/backups";
+
 // ── advisory lock ───────────────────────────────────────────────────────────────────
 
 /**
@@ -283,7 +309,8 @@ function installSignalHandlers(): void {
   }
 }
 
-function pidIsAlive(pid: number): boolean {
+/** True when a process with this pid exists — including one owned by somebody else. */
+export function pidIsAlive(pid: number): boolean {
   if (!Number.isInteger(pid) || pid <= 0) return false;
   try {
     process.kill(pid, 0);
@@ -295,7 +322,7 @@ function pidIsAlive(pid: number): boolean {
 }
 
 /** First line of the lock file is the pid; anything else means the file is corrupt. */
-function readLockPid(lockPath: string): number | null {
+export function readLockPid(lockPath: string): number | null {
   try {
     const text = readFileSync(lockPath, "utf8");
     const first = text.split("\n", 1)[0]!.trim();
@@ -331,72 +358,72 @@ function tryCreateLock(lockPath: string): boolean {
  * SIGINT/SIGTERM/SIGHUP and normal process exit.
  */
 export async function withLock<T>(ctx: Context, fn: () => Promise<T>): Promise<T> {
-  const lockPath = join(ctx.localDir, "lock");
+  const path = lockPath(ctx);
 
-  const depth = held.get(lockPath) ?? 0;
+  const depth = held.get(path) ?? 0;
   if (depth > 0) {
-    held.set(lockPath, depth + 1);
+    held.set(path, depth + 1);
     try {
       return await fn();
     } finally {
-      held.set(lockPath, (held.get(lockPath) ?? 1) - 1);
+      held.set(path, (held.get(path) ?? 1) - 1);
     }
   }
 
   // Claim synchronously, before the first await, so a nested call that starts while we are
   // still acquiring takes the re-entrant path instead of colliding with our own lock file.
-  held.set(lockPath, 1);
+  held.set(path, 1);
   try {
-    await acquire(ctx, lockPath);
+    await acquire(ctx, path);
   } catch (e) {
-    held.set(lockPath, 0);
+    held.set(path, 0);
     throw e;
   }
 
-  ownedLockFiles.add(lockPath);
+  ownedLockFiles.add(path);
   try {
     return await fn();
   } finally {
-    held.set(lockPath, 0);
-    ownedLockFiles.delete(lockPath);
+    held.set(path, 0);
+    ownedLockFiles.delete(path);
     try {
-      unlinkSync(lockPath);
+      unlinkSync(path);
     } catch {
       /* somebody already broke it */
     }
   }
 }
 
-async function acquire(ctx: Context, lockPath: string): Promise<void> {
+async function acquire(ctx: Context, path: string): Promise<void> {
   await mkdir(ctx.localDir, { recursive: true });
   installSignalHandlers();
 
-  if (!tryCreateLock(lockPath)) {
-    const pid = readLockPid(lockPath);
+  if (!tryCreateLock(path)) {
+    const pid = readLockPid(path);
     if (pid !== null && pidIsAlive(pid)) {
       throw new OvergitError(
         "LOCKED",
         `another overgit process (pid ${pid}) is working in ${ctx.root}`,
         {
-          hint: `wait for it to finish, or remove ${lockPath} if you are sure it is dead`,
-          paths: [lockPath],
+          hint: `wait for it to finish, or remove ${path} if you are sure it is dead`,
+          paths: [path],
         },
       );
     }
     process.stderr.write(
       pid === null
-        ? `overgit: warning: removing unreadable lock file ${lockPath}\n`
-        : `overgit: warning: removing stale lock file ${lockPath} (pid ${pid} is gone)\n`,
+        ? `overgit: warning: removing unreadable lock file ${path}\n`
+        : `overgit: warning: removing stale lock file ${path} (pid ${pid} is gone)\n`,
     );
     try {
-      unlinkSync(lockPath);
+      unlinkSync(path);
     } catch {
       /* raced with the owner releasing it */
     }
-    if (!tryCreateLock(lockPath)) {
+    if (!tryCreateLock(path)) {
       throw new OvergitError("LOCKED", `cannot acquire the overgit lock in ${ctx.root}`, {
-        hint: `remove ${lockPath} if you are sure no other overgit is running`,
-        paths: [lockPath],
+        hint: `remove ${path} if you are sure no other overgit is running`,
+        paths: [path],
       });
     }
   }

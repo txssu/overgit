@@ -3,10 +3,10 @@
  * engines' report objects into something a person can read.
  */
 
-import { lstat } from "node:fs/promises";
 import { join } from "node:path";
 
 import { discover, type Context } from "../context.ts";
+import { pathExists } from "../files.ts";
 import { OvergitError } from "../errors.ts";
 import { toRepoPath } from "../paths.ts";
 import type { ApplyReport, OwnershipResult } from "../ownership.ts";
@@ -30,21 +30,12 @@ const BASE_OPERATIONS: [string, string, string, string][] = [
   ["BISECT_LOG", "a bisect", "git bisect good/bad", "git bisect reset"],
 ];
 
-async function exists(p: string): Promise<boolean> {
-  try {
-    await lstat(p);
-    return true;
-  } catch {
-    return false;
-  }
-}
-
 /** `null` when the base is idle, otherwise `[what, finish, abort]`. */
 export async function baseOperationInProgress(
   ctx: Context,
 ): Promise<[string, string, string] | null> {
   for (const [marker, what, finish, abort] of BASE_OPERATIONS) {
-    if (await exists(join(ctx.baseWorktreeGitDir, marker))) return [what, finish, abort];
+    if (await pathExists(join(ctx.baseWorktreeGitDir, marker))) return [what, finish, abort];
   }
   return null;
 }

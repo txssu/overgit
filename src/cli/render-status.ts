@@ -10,6 +10,7 @@
  *    the only field order that is safe when a filename may contain a tab.
  */
 
+import { shortOid } from "../git.ts";
 import type { MergedStatus, OverlayFileStatus } from "../status.ts";
 import { columns, displayPath, plural, type Ui } from "../ui.ts";
 
@@ -26,13 +27,11 @@ const KIND_MARK: Record<OverlayFileStatus["kind"], string> = {
   delete: "-",
 };
 
-function shortOid(oid: string | null): string {
-  return oid === null ? "?" : oid.slice(0, 8);
-}
+const abbrev = (oid: string | null): string => shortOid(oid, "?");
 
 function branchPhrase(branch: string | null, head: string | null): string {
   if (head === null) return "no commits yet";
-  if (branch === null) return `HEAD detached at ${shortOid(head)}`;
+  if (branch === null) return `HEAD detached at ${abbrev(head)}`;
   return `on branch ${branch}`;
 }
 
@@ -249,7 +248,7 @@ function colourKind(ui: Ui, kind: OverlayFileStatus["kind"]): string {
  *
  * For a `b` row, S and W are git's own two porcelain-v1 status characters.
  */
-export function renderStatusShort(s: MergedStatus, ui: Ui): string[] {
+export function renderStatusShort(s: MergedStatus): string[] {
   const out: string[] = [];
   if (s.detached) out.push("# detached");
   if (s.syncInProgress) out.push("# sync-in-progress");

@@ -48,17 +48,25 @@ import { join, relative as pathRelative, resolve as pathResolve, sep } from "nod
 import * as fs from "node:fs/promises";
 
 import type { Context } from "./context.ts";
-import { OvergitError, isOvergitError } from "./errors.ts";
+import {
+  detachMarkerPath,
+  lockPath,
+  pidIsAlive,
+  readLockPid,
+  syncStatePath,
+} from "./context.ts";
+import { isOvergitError } from "./errors.ts";
 import type { IndexEntry } from "./git.ts";
-import { literalPathspec, splitNul } from "./git.ts";
+import { contentIsOid, indexMap, literalPathspec, splitNul } from "./git.ts";
+import type { WorktreeState } from "./files.ts";
+import { pathExists } from "./files.ts";
 import type { Entry, Manifest } from "./manifest.ts";
 import {
   emptyManifest,
   parseManifest,
   ownedPaths,
+  persistManifest,
   readManifest,
-  serializeManifest,
-  writeManifest,
 } from "./manifest.ts";
 import {
   BEGIN_MARKER,
@@ -156,8 +164,6 @@ export interface RepairResult {
 
 /* ------------------------------------------------------------------ small helpers */
 
-const enc = new TextEncoder();
-
 function mk(
   id: ProblemId,
   severity: Problem["severity"],
@@ -176,26 +182,7 @@ function mk(
   return p;
 }
 
-/** Git's blob OID for `bytes`, in whichever algorithm `likeOid` is written in. */
-function blobOidLike(bytes: Uint8Array, likeOid: string): string {
-  const h = new Bun.CryptoHasher(likeOid.length === 64 ? "sha256" : "sha1");
-  h.update(enc.encode(`blob ${bytes.byteLength}\0`));
-  h.update(bytes);
-  return h.digest("hex");
-}
-
-function contentIsOid(content: Uint8Array | null, oid: string | null | undefined): boolean {
-  if (content === null || !oid) return false;
-  return blobOidLike(content, oid) === oid;
-}
-
-type FileKind = "absent" | "file" | "symlink" | "dir" | "other";
-
-interface WtState {
-  kind: FileKind;
-  mode: "100644" | "100755" | "120000" | null;
-  content: Uint8Array | null;
-}
+type WtState = WorktreeState;
 
 const ABSENT: WtState = { kind: "absent", mode: null, content: null };
 
@@ -223,15 +210,6 @@ async function readWorktree(abs: string): Promise<WtState> {
   };
 }
 
-async function exists(p: string): Promise<boolean> {
-  try {
-    await fs.lstat(p);
-    return true;
-  } catch {
-    return false;
-  }
-}
-
 function quote(p: string): string {
   return /^[A-Za-z0-9._\-/]+$/.test(p) ? p : JSON.stringify(p);
 }
@@ -251,7 +229,7 @@ async function looksLikeGitDir(p: string): Promise<boolean> {
   } catch {
     return false;
   }
-  return exists(join(p, "HEAD"));
+  return pathExists(join(p, "HEAD"));
 }
 
 /**
@@ -457,40 +435,11 @@ const BASE_OPERATION_MARKERS = [
 
 async function baseOperationInProgress(ctx: Context): Promise<string | null> {
   for (const [marker, what] of BASE_OPERATION_MARKERS) {
-    if (await exists(join(ctx.baseWorktreeGitDir, marker))) return what;
+    if (await pathExists(join(ctx.baseWorktreeGitDir, marker))) return what;
   }
   return null;
 }
 
-function lockPath(ctx: Context): string {
-  return join(ctx.localDir, "lock");
-}
-function syncStatePath(ctx: Context): string {
-  return join(ctx.localDir, "sync-state.json");
-}
-function detachMarkerPath(ctx: Context): string {
-  return join(ctx.localDir, "detached");
-}
-
-function pidIsAlive(pid: number): boolean {
-  if (!Number.isInteger(pid) || pid <= 0) return false;
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch (e) {
-    return (e as NodeJS.ErrnoException).code === "EPERM";
-  }
-}
-
-async function readLockPid(ctx: Context): Promise<number | null> {
-  try {
-    const text = await fs.readFile(lockPath(ctx), "utf8");
-    const pid = Number.parseInt(text.split("\n", 1)[0]!.trim(), 10);
-    return Number.isInteger(pid) && pid > 0 ? pid : null;
-  } catch {
-    return null;
-  }
-}
 
 /* ------------------------------------------------------------------ overlay config */
 
@@ -688,12 +637,6 @@ function overlayContentOf(s: Survey, p: string): IndexEntry | undefined {
   return s.overlayIndex.get(p) ?? s.overlayHead.get(p);
 }
 
-function indexMap<T extends IndexEntry>(entries: T[]): Map<string, T> {
-  const m = new Map<string, T>();
-  for (const e of entries) if (e.stage === 0) m.set(e.path, e);
-  return m;
-}
-
 /** Paths the overlay tracks that are its own bookkeeping rather than user content. */
 function isOverlayInternal(p: string): boolean {
   return isReservedPath(p);
@@ -706,8 +649,8 @@ async function survey(ctx: Context, manifest: Manifest): Promise<Survey> {
       ctx.overlay.lsFiles(),
       ctx.overlay.headExists(),
       baseOperationInProgress(ctx),
-      exists(syncStatePath(ctx)),
-      exists(detachMarkerPath(ctx)),
+      pathExists(syncStatePath(ctx)),
+      pathExists(detachMarkerPath(ctx)),
     ]);
 
   const overlayHead = overlayHasHead ? indexMap(await ctx.overlay.lsTree("HEAD")) : new Map();
@@ -757,7 +700,7 @@ export async function diagnose(ctx: Context): Promise<Problem[]> {
   // target exists is an equally valid overlay (measured — DESIGN.md §6.6), so ask again.
   const hasOverlay = ctx.hasOverlay || (await resolveOverlayGuard(ctx)) !== null;
   if (!hasOverlay) {
-    if (protection !== null && (await exists(ctx.overgitDir))) problems.push(protection);
+    if (protection !== null && (await pathExists(ctx.overgitDir))) problems.push(protection);
     problems.push(
       mk(
         "no-overlay",
@@ -780,7 +723,7 @@ export async function diagnose(ctx: Context): Promise<Problem[]> {
   //
   // It is recoverable: the manifest is *tracked by the overlay*, so `HEAD:.overgit/…` almost
   // always still has it, which is why this is fixable rather than fatal.
-  if (!(await exists(ctx.manifestPath))) {
+  if (!(await pathExists(ctx.manifestPath))) {
     const inHead = (await ctx.overlay.revParse("HEAD:.overgit/manifest.json")) !== null;
     problems.push(
       mk(
@@ -820,8 +763,8 @@ export async function diagnose(ctx: Context): Promise<Problem[]> {
   // ── state that does not depend on the manifest ────────────────────────────────────
   for (const c of await checkOverlayConfig(ctx)) problems.push(c.problem);
 
-  if (await exists(lockPath(ctx))) {
-    const pid = await readLockPid(ctx);
+  if (await pathExists(lockPath(ctx))) {
+    const pid = readLockPid(lockPath(ctx));
     if (pid !== null && pidIsAlive(pid) && pid !== process.pid) {
       problems.push(
         mk(
@@ -859,7 +802,7 @@ export async function diagnose(ctx: Context): Promise<Problem[]> {
     );
   }
 
-  const syncInProgress = await exists(syncStatePath(ctx));
+  const syncInProgress = await pathExists(syncStatePath(ctx));
   if (syncInProgress) {
     let readable = true;
     try {
@@ -1699,24 +1642,14 @@ async function repairRound(ctx: Context, problems: Problem[]): Promise<RoundResu
 /** Removes a lock left by a dead process. Never removes a live one, or our own. */
 async function fixInterruptedLock(ctx: Context): Promise<boolean> {
   const path = lockPath(ctx);
-  if (!(await exists(path))) return true;
-  const pid = await readLockPid(ctx);
+  if (!(await pathExists(path))) return true;
+  const pid = readLockPid(lockPath(ctx));
   // `withLock` may be held by this very process (the CLI wraps `repair` in it), in which
   // case removing the file would hand the repo to a racing overgit.
   if (pid === process.pid) return false;
   if (pid !== null && pidIsAlive(pid)) return false;
   await fs.rm(path, { force: true });
   return true;
-}
-
-/**
- * Write the manifest and stage it into the overlay index in one step — the same pairing
- * `ownership.ts` uses, so the overlay always carries the manifest that describes it.
- */
-async function persistManifest(ctx: Context, m: Manifest): Promise<void> {
-  await writeManifest(ctx, m);
-  const oid = await ctx.overlay.hashObject(enc.encode(serializeManifest(m)), { write: true });
-  await ctx.overlay.updateIndexCacheinfo("100644", oid, ".overgit/manifest.json");
 }
 
 /**
@@ -1771,17 +1704,5 @@ async function rebuildManifest(ctx: Context): Promise<{ backup: string | null }>
   }
   await persistManifest(ctx, m);
   return { backup };
-}
-
-/* ------------------------------------------------------------------ misc exports */
-
-/** True when `problems` contains anything that should make the CLI exit non-zero. */
-export function hasErrors(problems: Problem[]): boolean {
-  return problems.some((p) => p.severity === "error");
-}
-
-/** Stable one-line rendering, used by `--porcelain`. */
-export function formatProblem(p: Problem): string {
-  return [p.severity, p.id, p.fixable ? "fixable" : "manual", p.path ?? ""].join("\t");
 }
 

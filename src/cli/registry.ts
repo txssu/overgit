@@ -51,8 +51,3 @@ for (const c of COMMANDS) {
 export function findCommand(name: string): CommandSpec | undefined {
   return BY_NAME.get(name);
 }
-
-/** Every name a user could type, including aliases and `help`. */
-export function commandNames(): string[] {
-  return [...BY_NAME.keys(), "help"].sort();
-}

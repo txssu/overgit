@@ -43,14 +43,14 @@
 
 import { OvergitError, pathError } from "./errors.ts";
 import type { Context } from "./context.ts";
-import { withLock } from "./context.ts";
-import type { IndexEntry } from "./git.ts";
-import { literalPathspec, mergeBlobs, splitNul } from "./git.ts";
+import { BACKUP_REL, syncStatePath, withLock } from "./context.ts";
+import { indexMap, literalPathspec, mergeBlobs, shortOid, splitNul } from "./git.ts";
 import type { Kind, Manifest } from "./manifest.ts";
 import {
   cloneManifest,
   ownedPaths,
   parseManifest,
+  persistManifest,
   readManifest,
   serializeManifest,
   writeManifest,
@@ -198,21 +198,17 @@ export interface SyncState {
 /* ------------------------------------------------------------------ constants */
 
 const SYNC_STATE_VERSION = 1;
-const MANIFEST_REPO_PATH = ".overgit/manifest.json";
-const BACKUP_REL = ".overgit/local/backups";
-const enc = new TextEncoder();
-
-function syncStatePath(ctx: Context): string {
-  return join(ctx.localDir, "sync-state.json");
-}
 
 /** Where the upstream copy of an unmergeable (binary/symlink) conflict is written. */
+const CONFLICT_SCRATCH_REL = ".overgit/local/sync";
+
 function conflictScratchDir(ctx: Context): string {
-  return join(ctx.localDir, "sync");
+  return join(ctx.root, CONFLICT_SCRATCH_REL);
 }
 
-function shortOid(o: string | null | undefined): string {
-  return o ? o.slice(0, 8) : "(none)";
+/** Root-relative path of the upstream copy written for an unmergeable conflict. */
+export function upstreamCopyPath(p: string): string {
+  return `${CONFLICT_SCRATCH_REL}/${slugify(p)}.upstream`;
 }
 
 function slugify(p: string): string {
@@ -324,29 +320,12 @@ function syncInProgressError(state: SyncState): OvergitError {
   );
 }
 
-/* ------------------------------------------------------------------ manifest helper */
-
-/**
- * Write the manifest and stage it into the overlay index, exactly as `ownership.ts` does.
- * Kept local because `ownership.persistManifest` is private; the two must stay in step.
- */
-async function persistManifest(ctx: Context, m: Manifest): Promise<void> {
-  await writeManifest(ctx, m);
-  const oid = await ctx.overlay.hashObject(enc.encode(serializeManifest(m)), { write: true });
-  await ctx.overlay.updateIndexCacheinfo("100644", oid, MANIFEST_REPO_PATH);
-}
 
 /* ------------------------------------------------------------------ repo probes */
 
 interface TreeEntry {
   oid: string;
   mode: string;
-}
-
-function indexMap(entries: IndexEntry[]): Map<string, IndexEntry> {
-  const m = new Map<string, IndexEntry>();
-  for (const e of entries) if (e.stage === 0) m.set(e.path, e);
-  return m;
 }
 
 /** `HEAD:<path>` in the base, with its mode. `null` when absent or not a blob. */
@@ -864,11 +843,6 @@ async function writeConflictScratch(ctx: Context, p: string, content: Uint8Array
   const abs = join(dir, `${slugify(p)}.upstream`);
   await fs.writeFile(abs, content);
   return abs;
-}
-
-/** Root-relative path of the upstream copy written for an unmergeable conflict. */
-export function upstreamCopyPath(p: string): string {
-  return `.overgit/local/sync/${slugify(p)}.upstream`;
 }
 
 /**

@@ -46,8 +46,10 @@ import { dirname, join, resolve } from "node:path";
 
 import { OvergitError } from "./errors.ts";
 import { Git } from "./git.ts";
-import { discover, withLock, type Context } from "./context.ts";
+import { detachMarkerPath, discover, pidIsAlive, withLock, type Context } from "./context.ts";
+import { entryKind, pathExists, pruneEmptyParents } from "./files.ts";
 import {
+  MANIFEST_REPO_PATH,
   emptyManifest,
   ownedPaths,
   readManifest,
@@ -71,15 +73,9 @@ import {
   type ApplyOptions,
   type ApplyReport,
 } from "./ownership.ts";
-import { literalPathspec, type IndexEntry } from "./git.ts";
+import { SUPPORTED_MODES, indexMap, literalPathspec, type IndexEntry } from "./git.ts";
 
 const enc = new TextEncoder();
-
-/** Repo-relative path of the manifest. It is tracked *by the overlay*, so it has one. */
-export const MANIFEST_REPO_PATH = ".overgit/manifest.json";
-
-/** Marker file inside `.overgit/local/` recording that the overlay is unmounted. */
-export const DETACH_MARKER = "detached";
 
 /** Prefix of the scratch directories `cloneOverlay` clones into. */
 const CLONE_TMP_PREFIX = ".clone-";
@@ -94,38 +90,14 @@ const OVERLAY_CONFIG: ReadonlyArray<readonly [string, string]> = [
   ["status.showUntrackedFiles", "no"],
 ];
 
-const SUPPORTED_MODES = new Set(["100644", "100755", "120000"]);
-
 /* ------------------------------------------------------------------ tiny fs helpers */
-
-async function pathExists(p: string): Promise<boolean> {
-  try {
-    await fs.lstat(p);
-    return true;
-  } catch {
-    return false;
-  }
-}
-
-type EntryKind = "absent" | "file" | "symlink" | "dir" | "other";
-
-async function entryKind(abs: string): Promise<EntryKind> {
-  try {
-    const st = await fs.lstat(abs);
-    if (st.isSymbolicLink()) return "symlink";
-    if (st.isDirectory()) return "dir";
-    if (st.isFile()) return "file";
-    return "other";
-  } catch {
-    return "absent";
-  }
-}
 
 function scratchName(prefix: string): string {
   return `${prefix}${process.pid}-${Math.random().toString(36).slice(2, 10)}`;
 }
 
-function ioError(path: string, e: unknown): OvergitError {
+/** Distinct from `errors.ioError`: this one is raised on the way *out*, not the way in. */
+function writeError(path: string, e: unknown): OvergitError {
   return new OvergitError("IO_FAILED", `cannot write ${path}: ${(e as Error).message}`, {
     hint: "check that the directory exists and is writable",
     paths: [path],
@@ -143,43 +115,8 @@ async function writeFileAtomic(path: string, bytes: Uint8Array, mode?: number): 
     await fs.rename(tmp, path);
   } catch (e) {
     await fs.rm(tmp, { force: true }).catch(() => {});
-    throw ioError(path, e);
+    throw writeError(path, e);
   }
-}
-
-function pidIsAlive(pid: number): boolean {
-  if (!Number.isInteger(pid) || pid <= 0) return false;
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch (e) {
-    return (e as NodeJS.ErrnoException).code === "EPERM";
-  }
-}
-
-/**
- * Remove directories that exist only because an overlay-added file was in them.
- *
- * git cannot represent an empty directory, so a plain `git clone` of the base never has
- * one. Leaving `scripts/` behind after deleting `scripts/dev.sh` would make a detached
- * work-tree distinguishable from a pristine checkout — which is precisely the property
- * `detach` promises. `rmdir` is the whole safety mechanism: it refuses a directory that
- * still holds anything, so this can never delete something in use.
- */
-async function pruneEmptyParents(root: string, repoPath: string): Promise<string[]> {
-  const removed: string[] = [];
-  let rel = dirname(repoPath);
-  while (rel !== "" && rel !== "." && rel !== "/") {
-    if (rel === ".overgit" || rel.startsWith(".overgit/")) break;
-    try {
-      await fs.rmdir(join(root, rel));
-    } catch {
-      break; // not empty, or already gone
-    }
-    removed.push(rel);
-    rel = dirname(rel);
-  }
-  return removed;
 }
 
 /**
@@ -209,12 +146,6 @@ async function restorePristine(ctx: Context, p: string, base: IndexEntry): Promi
   // `checkout-index` (an exotic filter, a mode we do not model) still leaves the user with
   // the right bytes, and `doctor` will report the difference if a filter mattered.
   await materialise(ctx, p, base.mode, await ctx.base.catFileBlob(base.oid));
-}
-
-function indexMap(entries: IndexEntry[]): Map<string, IndexEntry> {
-  const m = new Map<string, IndexEntry>();
-  for (const e of entries) if (e.stage === 0) m.set(e.path, e);
-  return m;
 }
 
 /* ------------------------------------------------------------------ url handling */
@@ -771,33 +702,6 @@ export interface DetachReport {
   marker: string;
 }
 
-export function detachMarkerPath(ctx: Context): string {
-  return join(ctx.localDir, DETACH_MARKER);
-}
-
-export async function readDetachMarker(ctx: Context): Promise<DetachMarker | null> {
-  let text: string;
-  try {
-    text = await fs.readFile(detachMarkerPath(ctx), "utf8");
-  } catch {
-    return null;
-  }
-  try {
-    const raw = JSON.parse(text) as Partial<DetachMarker>;
-    return {
-      version: 1,
-      detachedAt: typeof raw.detachedAt === "string" ? raw.detachedAt : "",
-      overlayHead: typeof raw.overlayHead === "string" ? raw.overlayHead : null,
-      paths: Array.isArray(raw.paths) ? raw.paths.filter((p) => typeof p === "string") : [],
-      restored: Array.isArray(raw.restored) ? raw.restored.filter((p) => typeof p === "string") : [],
-      removed: Array.isArray(raw.removed) ? raw.removed.filter((p) => typeof p === "string") : [],
-    };
-  } catch {
-    // A corrupt marker still means "detached" — that is the safe reading.
-    return { version: 1, detachedAt: "", overlayHead: null, paths: [], restored: [], removed: [] };
-  }
-}
-
 export async function isDetached(ctx: Context): Promise<boolean> {
   return pathExists(detachMarkerPath(ctx));
 }
@@ -1338,17 +1242,4 @@ function isOnlyOurScaffolding(bytes: Uint8Array): boolean {
     return false;
   }
   return true;
-}
-
-/** Which hooks currently carry the managed block. For `overgit doctor` / `status`. */
-export async function hooksInstalled(ctx: Context): Promise<HookName[]> {
-  const dir = await hooksDir(ctx);
-  const out: HookName[] = [];
-  for (const hook of HOOK_NAMES) {
-    const path = join(dir, hook);
-    if (!(await pathExists(path))) continue;
-    const bytes = new Uint8Array(await fs.readFile(path).catch(() => Buffer.alloc(0)));
-    if (readManagedBlock(bytes) !== null) out.push(hook);
-  }
-  return out;
 }

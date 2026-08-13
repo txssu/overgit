@@ -118,7 +118,12 @@ const READ_ONLY_SUBCOMMANDS = new Set([
  * these; inheriting them would point our commands at the wrong repository or make
  * pathspec parsing behave differently from what this module assumes.
  */
-const SCRUBBED_ENV = [
+/**
+ * Variables that would silently retarget a git command at another repository. overgit can
+ * be invoked from a git hook, where `GIT_DIR` and `GIT_INDEX_FILE` are exported — so every
+ * spawn scrubs these, the terminal-attached ones in `cli/passthrough.ts` included.
+ */
+export const SCRUBBED_ENV = [
   "GIT_DIR",
   "GIT_WORK_TREE",
   "GIT_COMMON_DIR",
@@ -133,16 +138,21 @@ const SCRUBBED_ENV = [
   "GIT_GLOB_PATHSPECS",
   "GIT_ICASE_PATHSPECS",
   "GIT_QUARANTINE_PATH",
-  "GIT_EXTERNAL_DIFF",
-  "GIT_DIFF_OPTS",
 ];
+
+/**
+ * Scrubbed on top of that for plumbing only. A user's `GIT_EXTERNAL_DIFF` is a legitimate
+ * setting for the commands that hand the terminal to git, but it would corrupt output this
+ * module parses.
+ */
+const SCRUBBED_ENV_PLUMBING = [...SCRUBBED_ENV, "GIT_EXTERNAL_DIFF", "GIT_DIFF_OPTS"];
 
 function buildEnv(readOnly: boolean, extra?: Record<string, string>): Record<string, string> {
   const env: Record<string, string> = {};
   for (const [k, v] of Object.entries(process.env)) {
     if (v !== undefined) env[k] = v;
   }
-  for (const k of SCRUBBED_ENV) delete env[k];
+  for (const k of SCRUBBED_ENV_PLUMBING) delete env[k];
   env.GIT_TERMINAL_PROMPT = "0";
   env.GIT_PAGER = "cat";
   env.GIT_ASKPASS = "";
@@ -153,8 +163,6 @@ function buildEnv(readOnly: boolean, extra?: Record<string, string>): Record<str
   if (extra) Object.assign(env, extra);
   return env;
 }
-
-const EMPTY = new Uint8Array(0);
 
 function toBytes(input: string | Uint8Array): Uint8Array {
   return typeof input === "string" ? new TextEncoder().encode(input) : input;
@@ -176,6 +184,35 @@ export function literalPathspec(p: string): string {
   return `:(literal)${p}`;
 }
 
+/* ------------------------------------------------------------------ object ids */
+
+const enc = new TextEncoder();
+
+/** Git's blob OID for `bytes`, in whichever algorithm `likeOid` is written in. */
+export function blobOidLike(bytes: Uint8Array, likeOid: string): string {
+  const h = new Bun.CryptoHasher(likeOid.length === 64 ? "sha256" : "sha1");
+  h.update(enc.encode(`blob ${bytes.byteLength}\0`));
+  h.update(bytes);
+  return h.digest("hex");
+}
+
+/** True when `content` hashes to `oid`. Absent content matches nothing, not even absence. */
+export function contentIsOid(content: Uint8Array | null, oid: string | null | undefined): boolean {
+  if (content === null || !oid) return false;
+  return blobOidLike(content, oid) === oid;
+}
+
+/**
+ * Abbreviated OID for messages. `absent` is what to print when there is no OID at all —
+ * prose wants `(none)`, a status column wants `?`, and they must not drift apart.
+ */
+export function shortOid(o: string | null | undefined, absent = "(none)"): string {
+  return o ? o.slice(0, 8) : absent;
+}
+
+/** The file modes overgit can store: regular, executable, symlink. No gitlinks. */
+export const SUPPORTED_MODES = new Set(["100644", "100755", "120000"]);
+
 export interface IndexEntry {
   path: string;
   oid: string;
@@ -184,7 +221,12 @@ export interface IndexEntry {
   skipWorktree: boolean;
 }
 
-export type StatusCode = string; // 2-char XY from porcelain v1
+/** Index entries by path, conflict stages dropped — stage 0 is the only resolved state. */
+export function indexMap<T extends IndexEntry>(entries: T[]): Map<string, T> {
+  const m = new Map<string, T>();
+  for (const e of entries) if (e.stage === 0) m.set(e.path, e);
+  return m;
+}
 
 export interface StatusEntry {
   x: string;

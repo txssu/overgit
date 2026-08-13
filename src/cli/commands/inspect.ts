@@ -7,7 +7,7 @@
  */
 
 import { computeStatus } from "../../status.ts";
-import { readManifest, ownedPaths, type Kind } from "../../manifest.ts";
+import { KINDS, readManifest, ownedPaths, type Kind } from "../../manifest.ts";
 import { boolFlag, rejectArgs, requireArgs, stringFlag } from "../args.ts";
 import type { CommandSpec, Env } from "../command.ts";
 import { openContext, repoPaths } from "../common.ts";
@@ -74,14 +74,12 @@ export const statusCommand: CommandSpec = {
       env.ui.raw(renderStatusPorcelain(s));
       return 0;
     }
-    for (const line of short ? renderStatusShort(s, env.ui) : renderStatusLong(s, env.ui)) {
+    for (const line of short ? renderStatusShort(s) : renderStatusLong(s, env.ui)) {
       env.ui.print(line);
     }
     return 0;
   },
 };
-
-const KINDS: readonly Kind[] = ["add", "override", "delete"];
 
 export const listCommand: CommandSpec = {
   name: "list",

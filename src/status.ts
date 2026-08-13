@@ -8,7 +8,10 @@
  */
 
 import type { Context } from "./context.ts";
+import { detachMarkerPath, syncStatePath } from "./context.ts";
+import { pathExists } from "./files.ts";
 import type { StatusEntry } from "./git.ts";
+import { blobOidLike } from "./git.ts";
 import type { Entry, Manifest } from "./manifest.ts";
 import { ownedPaths, readManifest } from "./manifest.ts";
 import { currentExcludeBlock, desiredExcludeLines } from "./exclude.ts";
@@ -80,15 +83,6 @@ export interface MergedStatus {
   pullBlocked: string[];
 }
 
-const enc = new TextEncoder();
-
-function blobOidLike(bytes: Uint8Array, likeOid: string): string {
-  const h = new Bun.CryptoHasher(likeOid.length === 64 ? "sha256" : "sha1");
-  h.update(enc.encode(`blob ${bytes.byteLength}\0`));
-  h.update(bytes);
-  return h.digest("hex");
-}
-
 interface WtProbe {
   present: boolean;
   mode: string | null;
@@ -112,15 +106,6 @@ async function probe(abs: string): Promise<WtProbe> {
     };
   } catch {
     return { present: false, mode: null, oidLike: null };
-  }
-}
-
-async function fileExists(path: string): Promise<boolean> {
-  try {
-    await lstat(path);
-    return true;
-  } catch {
-    return false;
   }
 }
 
@@ -322,7 +307,7 @@ export async function computeStatus(ctx: Context): Promise<MergedStatus> {
     problems++;
   }
 
-  const syncInProgress = await fileExists(join(ctx.localDir, "sync-state.json"));
+  const syncInProgress = await pathExists(syncStatePath(ctx));
 
   // Ask doctor rather than approximating it, so `status` can never claim "no problems" while
   // `doctor` exits 4 on the same repo. Imported lazily: `doctor.ts` imports this module for
@@ -335,7 +320,7 @@ export async function computeStatus(ctx: Context): Promise<MergedStatus> {
     // claiming a clean bill of health.
     problems = Math.max(problems, 1);
   }
-  const detached = await fileExists(join(ctx.localDir, "detached"));
+  const detached = await pathExists(detachMarkerPath(ctx));
 
   return {
     base: { branch: baseBranch, head: baseHead, entries: filterBaseEntries(baseEntries, owned) },

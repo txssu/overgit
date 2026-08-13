@@ -14,7 +14,7 @@
 
 import { OvergitError } from "../../errors.ts";
 import { withLock } from "../../context.ts";
-import { readManifest, serializeManifest, ownedPaths } from "../../manifest.ts";
+import { readManifest, ownedPaths, stageManifest } from "../../manifest.ts";
 import { readWorktreeEntry, stageOverlayContent } from "../../ownership.ts";
 import { boolFlag, stringFlag } from "../args.ts";
 import type { CommandSpec, Env } from "../command.ts";
@@ -23,8 +23,6 @@ import { gitPassthrough } from "../passthrough.ts";
 import { displayPath, plural } from "../../ui.ts";
 import type { Context } from "../../context.ts";
 import type { Ui } from "../../ui.ts";
-
-const MANIFEST_REPO_PATH = ".overgit/manifest.json";
 
 /**
  * Stage every owned path's current work-tree bytes into the overlay index.
@@ -51,9 +49,7 @@ async function stageOwnedPaths(ctx: Context, ui: Ui): Promise<{ staged: number; 
   }
 
   // The manifest is tracked by the overlay: it is what makes the state portable.
-  const bytes = new TextEncoder().encode(serializeManifest(manifest));
-  const oid = await ctx.overlay.hashObject(bytes, { write: true });
-  await ctx.overlay.updateIndexCacheinfo("100644", oid, MANIFEST_REPO_PATH);
+  await stageManifest(ctx, manifest);
 
   if (missing.length > 0) {
     ui.warn(

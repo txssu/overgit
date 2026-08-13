@@ -114,3 +114,12 @@ export function pathError(
 ): OvergitError {
   return new OvergitError(code, message, { hint, paths: [path] });
 }
+
+/** A failed syscall on a path the caller was entitled to read or write. */
+export function ioError(path: string, e: unknown): OvergitError {
+  return new OvergitError("IO_FAILED", `cannot access ${path}: ${(e as Error).message}`, {
+    hint: "check the path's permissions",
+    paths: [path],
+    cause: e,
+  });
+}
