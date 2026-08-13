@@ -345,7 +345,7 @@ export class Git {
     return { stdout: r.stdout, stderr: r.stderr, code: r.code };
   }
 
-  // ── repository shape ──────────────────────────────────────────────────────────────
+  // repository shape
 
   async version(): Promise<{ major: number; minor: number; patch: number; raw: string }> {
     const { stdout } = await this.run(["version"]);
@@ -407,7 +407,7 @@ export class Git {
     return (await this.revParse("HEAD")) !== null;
   }
 
-  // ── index / tree queries ──────────────────────────────────────────────────────────
+  // index / tree queries
 
   /** Every index entry for exactly `path` (all stages). */
   private async indexEntriesFor(path: string): Promise<IndexEntry[]> {
@@ -498,7 +498,7 @@ export class Git {
     return out;
   }
 
-  // ── objects ───────────────────────────────────────────────────────────────────────
+  // objects
 
   /** Exact bytes of a blob. Never goes through a string. */
   async catFileBlob(oid: string): Promise<Uint8Array> {
@@ -529,7 +529,7 @@ export class Git {
     return stdout.trim();
   }
 
-  // ── skip-worktree ─────────────────────────────────────────────────────────────────
+  // skip-worktree
 
   /** Fails loudly (GitError) if a path is not in the index — git cannot mark what it does not track. */
   async setSkipWorktree(paths: string[]): Promise<void> {
@@ -556,7 +556,7 @@ export class Git {
     return [...set].sort();
   }
 
-  // ── status ────────────────────────────────────────────────────────────────────────
+  // status
 
   /**
    * Porcelain v1, NUL-delimited. `--untracked-files` and `--renames` are forced so the
@@ -594,7 +594,7 @@ export class Git {
     return entries.length === 0;
   }
 
-  // ── index mutation ────────────────────────────────────────────────────────────────
+  // index mutation
 
   /** Stages exactly these paths (literal, never globbed). Records deletions too. */
   async addPaths(paths: string[]): Promise<void> {
@@ -675,7 +675,7 @@ export function parseStatusZ(stdout: string): StatusEntry[] {
   return out;
 }
 
-// ── three-way blob merge ────────────────────────────────────────────────────────────
+/* ---------------------------------------------- three-way blob merge */
 
 export interface MergeFileResult {
   content: Uint8Array;

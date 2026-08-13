@@ -1,16 +1,9 @@
 /**
- * `overgit doctor` — problem detection and self-repair.
+ * `overgit doctor`: problem detection and self-repair.
  *
- * The fixture is built with the real modules (`ownership.ts`) and the damage is applied
- * with **raw git** or raw filesystem calls, never with overgit, so every scenario here is
- * a state a user can genuinely land in. `test/drift.test.ts` is the systematic table of
- * drift-matrix damage; this file covers the metadata, config and judgement calls —
- * above all the line between *drift* (repair it) and *uncommitted work* (never touch it).
- *
- * These tests drive `diagnose`/`repair` directly rather than spawning `bin/overgit`: the
- * CLI (`src/cli/**`, owned by another builder) does not exist yet, and doctor's contract is
- * the module API. Everything *around* the module — the
- * sandbox, the fixtures, the base-invisibility oracle — is the real harness.
+ * Damage is applied with raw git or raw filesystem calls, never with overgit, so every
+ * scenario here is a state a user can genuinely land in. The judgement call under test
+ * throughout is drift (repair it) versus uncommitted work (never touch it).
  */
 
 import { afterEach, describe, expect, test } from "bun:test";

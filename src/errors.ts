@@ -47,7 +47,7 @@ export type ErrorCode =
   | "DOCTOR_PROBLEMS"
   | "INTERNAL";
 
-/** Frozen exit-code map. `overgit help` and the README document these. */
+/** Frozen exit-code map. `overgit help` prints it. */
 export const EXIT = {
   OK: 0,
   ERROR: 1,

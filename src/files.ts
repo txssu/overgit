@@ -10,6 +10,8 @@
 import * as fs from "node:fs/promises";
 import { dirname, join } from "node:path";
 
+import { OvergitError } from "./errors.ts";
+
 export type FileKind = "absent" | "file" | "symlink" | "dir" | "other";
 
 export interface WorktreeState {
@@ -18,6 +20,34 @@ export interface WorktreeState {
   mode: "100644" | "100755" | "120000" | null;
   /** File bytes, or the symlink target's bytes. `null` for absent/dir/other. */
   content: Uint8Array | null;
+}
+
+/**
+ * Write a file by renaming a sibling temp file over it, so a reader never sees a partial
+ * one and a killed run leaves either the old bytes or the new ones.
+ *
+ * For overgit's own metadata only. Work-tree content goes through `materialise` in
+ * `ownership.ts`, which also has to build symlinks and apply git's exec-bit rules.
+ */
+export async function writeFileAtomic(
+  path: string,
+  content: Uint8Array | string,
+  opts: { hint?: string; mode?: number } = {},
+): Promise<void> {
+  const tmp = `${path}.overgit-tmp-${process.pid}-${Math.random().toString(36).slice(2, 10)}`;
+  try {
+    await fs.mkdir(dirname(path), { recursive: true });
+    await fs.writeFile(tmp, content);
+    if (opts.mode !== undefined) await fs.chmod(tmp, opts.mode);
+    await fs.rename(tmp, path);
+  } catch (e) {
+    await fs.rm(tmp, { force: true }).catch(() => {});
+    throw new OvergitError("IO_FAILED", `cannot write ${path}: ${(e as Error).message}`, {
+      hint: opts.hint ?? "check that the directory exists and is writable",
+      paths: [path],
+      cause: e,
+    });
+  }
 }
 
 /** True when anything at all is at `p`, including a dangling symlink. */

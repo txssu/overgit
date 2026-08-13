@@ -1,13 +1,9 @@
 /**
- * Regressions from the adversarial critic round.
+ * Leak regressions: overlay content becoming visible to the base when a path's real
+ * base-side state stops matching what the manifest thinks it is.
  *
- * Four independent fresh-context reviews attacked ownership, sync, bootstrap and doctor.
- * All four returned FAIL, and three of them found the *same class* of bug from different
- * directions: overlay content becoming visible to the base whenever a path's real base-side
- * state stopped matching the manifest's idea of it.
- *
- * These tests drive the real CLI, because every one of these defects was only visible end to
- * end — the module-level suite was green throughout.
+ * These drive the CLI end to end. Every defect here was invisible to the module-level
+ * suite, which stayed green throughout, so keep them out of process.
  */
 
 import { afterAll, beforeEach, describe, expect, test } from "bun:test";
@@ -21,7 +17,6 @@ import {
   overgit,
   type Repo,
   type Sandbox,
-  type Upstream,
 } from "./helpers/harness.ts";
 
 let sb: Sandbox;

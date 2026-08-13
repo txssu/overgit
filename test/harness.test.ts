@@ -1,7 +1,6 @@
 /**
- * Tests *of the harness*. Everything here uses plain git — the CLI under test is not
- * required to exist (other builders are writing it in parallel), except for the two
- * cases that deliberately prove a missing CLI surfaces as a readable failure.
+ * Tests *of the harness*: the sandbox, the fixtures and the oracles every other test file
+ * trusts. Everything here uses plain git rather than overgit.
  *
  * The important one is "assertBaseClean agrees with git": the standard overlay fixture is
  * built by hand with raw git commands, and the oracle must call it clean. If that ever
@@ -187,27 +186,28 @@ describe("overgit() CLI spawn", () => {
     expect(CLI_ENTRY).toBe(join(PROJECT_ROOT, "bin", "overgit"));
   });
 
-  test("a missing/unbuilt CLI is a clean non-zero exit, never a hang", async () => {
-    await withSandbox("cli-missing", async (sb) => {
+  test("a failing command is a clean non-zero exit, never a hang", async () => {
+    await withSandbox("cli-failure", async (sb) => {
       const repo = await sb.mkBaseRepo("r");
-      const r = await overgitRun(repo.dir, ["--version"], { timeoutMs: 20_000 });
+      const r = await overgitRun(repo.dir, ["nonsense-command"], { timeoutMs: 20_000 });
       expect(r.timedOut).toBe(false);
-      // Either the CLI works (other builders landed it) or it fails readably.
-      if (r.code !== 0) {
-        expect(r.stderr.length).toBeGreaterThan(0);
-        const msg = await messageOfRejection(async () => expectOk(r));
-        expect(msg).toContain("expected command to succeed");
-        expect(msg).toContain("cwd:");
-        expect(msg).toContain(repo.dir);
-      }
+      expect(r.code).not.toBe(0);
+      expect(r.stderr.length).toBeGreaterThan(0);
+
+      // The failure has to arrive as a readable message naming where it ran, or every
+      // other test in the suite reports "something went wrong" and nothing else.
+      const msg = await messageOfRejection(async () => expectOk(r));
+      expect(msg).toContain("expected command to succeed");
+      expect(msg).toContain("cwd:");
+      expect(msg).toContain(repo.dir);
     });
   });
 
   test("the CLI runs in the sandbox env, not the parent's", async () => {
     await withSandbox("cli-env", async (sb) => {
       const repo = await sb.mkBaseRepo("r");
-      // Spawn bun directly with the same plumbing overgit() uses, but on a probe
-      // script, so this assertion holds whether or not src/cli exists yet.
+      // A probe script rather than overgit itself: the point is the plumbing `overgit()`
+      // sets up, and the probe can print the env back instead of acting on it.
       const probe = sb.path("probe.ts");
       await writeFile(
         probe,

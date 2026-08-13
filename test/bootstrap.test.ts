@@ -1,12 +1,9 @@
 /**
  * Bootstrap integration tests: `src/bootstrap.ts`, including detach/attach.
  *
- * Everything here drives overgit **out of process**, the way a user does. When
- * `bin/overgit` loads, that is what runs; while `src/cli/**` is still being written the
- * same commands are driven through an equivalent spawned driver (see `cliRunner`), so these
- * tests are behavioural either way and never import `src/*` for an assertion.
- *
- * The properties under test, in rough order of how much they matter:
+ * Everything drives `bin/overgit` out of process, the way a user does, and never imports
+ * `src/*` for an assertion. The properties under test, in rough order of how much they
+ * matter:
  *
  *  1. one command reproduces the merged tree on a machine that has never seen the overlay,
  *  2. running that command again is a clean no-op,
@@ -16,18 +13,13 @@
  *  6. hooks are opt-in, preserve whatever was in the file, and cannot fail a git command.
  */
 
-import { afterAll, beforeAll, describe, expect, test } from "bun:test";
-import { existsSync } from "node:fs";
-import { mkdtemp, readFile, rm, writeFile, stat } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { afterAll, describe, expect, test } from "bun:test";
+import { readFile, rm, stat } from "node:fs/promises";
 import { join } from "node:path";
 
 import {
   BUN_BIN,
   CLI_ENTRY,
-  DEFAULT_TIMEOUT_MS,
-  PROJECT_ROOT,
-  assertBaseClean,
   cleanupAllSandboxes,
   compareTrees,
   describeResult,
@@ -49,157 +41,14 @@ import { assertCleanSafe } from "./helpers/clean.ts";
 
 /* ==================================================================== the CLI runner */
 
-/**
- * A stand-in for `bin/overgit` that speaks the same command line but calls the modules
- * directly. Used only while `src/cli/**` does not load; the moment the real CLI works it
- * takes over and every assertion below applies to it instead.
- *
- * It is deliberately a *spawned process*: the interruption test has to be able to `kill -9`
- * a bootstrap half way through, and the error rendering matches the CLI's shape so
- * stderr assertions hold for both runners.
- */
-const DRIVER_SOURCE = `
-const ROOT = ${JSON.stringify(PROJECT_ROOT)};
-const bs = await import(ROOT + "/src/bootstrap.ts");
-const ctxmod = await import(ROOT + "/src/context.ts");
-const own = await import(ROOT + "/src/ownership.ts");
-const mani = await import(ROOT + "/src/manifest.ts");
-const errs = await import(ROOT + "/src/errors.ts");
-
-const argv = Bun.argv.slice(2);
-const cwd = process.cwd();
-const value = (name) => {
-  const i = argv.indexOf(name);
-  if (i < 0) return undefined;
-  const v = argv[i + 1];
-  argv.splice(i, 2);
-  return v;
-};
-const flag = (name) => {
-  const i = argv.indexOf(name);
-  if (i < 0) return false;
-  argv.splice(i, 1);
-  return true;
-};
-const ctx = (require) => ctxmod.discover(cwd, { requireOverlay: require !== false });
-
-try {
-  const cmd = argv.shift();
-  if (cmd === "init") {
-    const remote = value("--remote");
-    const branch = value("--branch");
-    const r = await bs.initOverlay(cwd, { remote, branch });
-    console.log("initialised an empty overlay in " + r.ctx.overgitDir + " on " + r.branch);
-  } else if (cmd === "clone") {
-    const baseUrl = value("--base");
-    const branch = value("--branch");
-    const overlayUrl = argv.shift();
-    const dir = argv.shift();
-    const r = await bs.cloneOverlay({ overlayUrl, baseUrl, dir, cwd, branch });
-    console.log(
-      (r.alreadyPresent ? "already bootstrapped: " : "bootstrapped ") +
-        r.owned + " path(s) in " + r.root,
-    );
-  } else if (cmd === "apply" || cmd === "attach") {
-    const r = await bs.attach(await ctx(), { dryRun: flag("--dry-run"), force: flag("--force") });
-    console.log("apply: changed=" + r.changed);
-  } else if (cmd === "detach") {
-    const r = await bs.detach(await ctx(), { force: flag("--force") });
-    console.log("detach: alreadyDetached=" + r.alreadyDetached);
-  } else if (cmd === "add") {
-    const r = await own.takeOwnership(await ctx(), argv, { force: flag("--force") });
-    for (const c of r.changes) console.log(c.from + " -> " + c.to + "  " + c.path);
-  } else if (cmd === "rm") {
-    const r = await own.whiteout(await ctx(), argv, { force: flag("--force") });
-    for (const c of r.changes) console.log(c.from + " -> " + c.to + "  " + c.path);
-  } else if (cmd === "restore") {
-    const r = await own.restoreToBase(await ctx(), argv, { force: flag("--force") });
-    for (const c of r.changes) console.log(c.from + " -> " + c.to + "  " + c.path);
-  } else if (cmd === "commit") {
-    const c = await ctx();
-    const msg = value("-m") ?? "overgit commit";
-    const m = await mani.readManifest(c);
-    for (const p of mani.ownedPaths(m)) {
-      if (m.entries[p].kind === "delete") continue;
-      const wt = await own.readWorktreeEntry(c.root, p);
-      if (wt) await own.stageOverlayContent(c, p, wt.mode, wt.content);
-    }
-    console.log(await c.overlay.commit(msg));
-  } else if (cmd === "push" || cmd === "fetch" || cmd === "log") {
-    const c = await ctx();
-    const r = await c.overlay.run([cmd, ...argv], { allowFailure: true });
-    process.stdout.write(r.stdout);
-    process.stderr.write(r.stderr);
-    process.exit(r.code);
-  } else if (cmd === "git") {
-    const c = await ctx();
-    const r = await c.overlay.run(argv, { allowFailure: true });
-    process.stdout.write(r.stdout);
-    process.stderr.write(r.stderr);
-    process.exit(r.code);
-  } else if (cmd === "hooks") {
-    const c = await ctx();
-    const sub = argv.shift();
-    if (sub !== "install" && sub !== "uninstall") {
-      process.stderr.write("error: usage: overgit hooks install|uninstall\\n");
-      process.exit(2);
-    }
-    const paths = sub === "install" ? await bs.hooksInstall(c) : await bs.hooksUninstall(c);
-    for (const p of paths) console.log(p);
-  } else if (cmd === "--version") {
-    console.log("overgit 0.1.0 (test driver)");
-  } else {
-    process.stderr.write("error: unknown command " + cmd + "\\n");
-    process.exit(2);
-  }
-} catch (e) {
-  if (errs.isOvergitError(e)) {
-    process.stderr.write("error: " + e.message + "\\n");
-    for (const d of e.details) process.stderr.write("  " + d + "\\n");
-    if (e.hint) process.stderr.write("  hint: " + e.hint + "\\n");
-    process.exit(e.exitCode);
-  }
-  process.stderr.write("error: " + (e && e.message) + "\\n" + (e && e.stack) + "\\n");
-  process.exit(1);
-}
-`;
-
-let driverDir: string | null = null;
-let driverPath: string | null = null;
-/** `true` once we know `bin/overgit` runs; `false` once we know it does not. */
-let useRealCli: boolean | null = null;
-
-async function setUpRunner(): Promise<void> {
-  if (existsSync(join(PROJECT_ROOT, "src", "cli", "main.ts"))) {
-    const probe = await realOvergit(PROJECT_ROOT, "--version");
-    if (probe.code === 0) {
-      useRealCli = true;
-      return;
-    }
-    console.warn(
-      `[bootstrap.test] ${CLI_ENTRY} exists but \`--version\` exited ${probe.code}; ` +
-        "driving src/bootstrap.ts directly instead.\n" + describeResult(probe),
-    );
-  }
-  useRealCli = false;
-  driverDir = await mkdtemp(join(tmpdir(), "overgit-p5-driver-"));
-  driverPath = join(driverDir, "overgit-driver.ts");
-  await writeFile(driverPath, DRIVER_SOURCE);
-}
-
-/** The argv the driver/CLI is spawned with, so a hook shim can reproduce it. */
+/** The argv `bin/overgit` is spawned with, so a hook shim can reproduce it. */
 export function cliArgv(): string[] {
-  return useRealCli ? [BUN_BIN, "--env-file=/dev/null", CLI_ENTRY] : [BUN_BIN, driverPath!];
+  return [BUN_BIN, "--env-file=/dev/null", CLI_ENTRY];
 }
 
 /** Run overgit in `cwd`. Resolves for any exit code. */
 async function og(cwd: string, ...args: string[]): Promise<CmdResult> {
-  if (useRealCli) return realOvergit(cwd, ...args);
-  return runCommand([...cliArgv(), ...args], {
-    cwd,
-    env: envForPath(cwd),
-    timeoutMs: DEFAULT_TIMEOUT_MS,
-  });
+  return realOvergit(cwd, ...args);
 }
 
 async function ogOk(cwd: string, ...args: string[]): Promise<CmdResult> {
@@ -217,11 +66,7 @@ async function makeOvergitShim(sb: Sandbox): Promise<string> {
   return dir;
 }
 
-beforeAll(setUpRunner);
-afterAll(async () => {
-  await cleanupAllSandboxes();
-  if (driverDir) await rm(driverDir, { recursive: true, force: true });
-});
+afterAll(cleanupAllSandboxes);
 
 /* ==================================================================== fixtures */
 

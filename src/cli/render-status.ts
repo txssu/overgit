@@ -238,16 +238,7 @@ function colourKind(ui: Ui, kind: OverlayFileStatus["kind"]): string {
 
 /* ------------------------------------------------------------------ short form */
 
-/**
- * `KSWU <path>` — four fixed columns. Documented in `overgit help status` and the README:
- *
- *   K  `+` add  `~` override  `-` delete  `b` a base-side change
- *   S  `S` staged in the overlay        `.` not
- *   W  `M` modified  `!` missing (or a whiteout that came back)  `.` clean
- *   U  `<` upstream changed  `x` upstream deleted  `+` base now tracks it  `?` unknown  `.` same
- *
- * For a `b` row, S and W are git's own two porcelain-v1 status characters.
- */
+/** `KSWU <path>`, four fixed columns. The legend is in `overgit help status`. */
 export function renderStatusShort(s: MergedStatus): string[] {
   const out: string[] = [];
   if (s.detached) out.push("# detached");
@@ -292,20 +283,9 @@ export function renderStatusShort(s: MergedStatus): string[] {
 const P_VERSION = "1";
 
 /**
- * Stable machine format. Every record ends with NUL; fields are tab-separated and the
- * **path is always the last field**, so a consumer splits on NUL and then on the first N
- * tabs. Field order and record names are part of the CLI contract.
- *
- *   version           <n>
- *   base.branch       <name|"">          base.head <oid|"">
- *   overlay.branch    <name|"">          overlay.head <oid|"">
- *   overlay.upstream  <name|"">          overlay.ahead <n>   overlay.behind <n>
- *   detached          0|1                sync-in-progress 0|1    problems <n>
- *   file    <kind> <staged> <dirty> <missing> <upstream> <path>
- *   base    <XY>   <path>
- *   base-orig <XY> <path>                (rename source; follows its `base` record)
- *   sync-pending    <path>
- *   pull-blocked    <path>
+ * Record names and field order are a CLI contract; `overgit help status` is where they are
+ * written down. The path is always the last field, so a consumer splits on NUL and then on
+ * the first N tabs.
  */
 export function renderStatusPorcelain(s: MergedStatus): string {
   const rec: string[] = [];

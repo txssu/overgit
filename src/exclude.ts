@@ -1,14 +1,10 @@
 /**
- * The managed block in `.git/info/exclude`.
+ * The managed block in `.git/info/exclude`, which is what hides every `add` path from the
+ * base. (`override` and `delete` use skip-worktree instead; see `ownership.ts`.)
  *
- * This is half of what makes the base blind to the overlay: every `add` path is listed
- * here, so the base does not even report it as untracked. (`override` and `delete` use
- * skip-worktree instead — see `ownership.ts`.)
- *
- * `.git/info/exclude` is a file users legitimately edit, and it is *not* in the base's
- * history, so we cannot afford to mangle it. Everything outside the markers is preserved
- * byte for byte: the block editor works on raw bytes rather than decoded strings, because
- * filenames are byte strings and need not be valid UTF-8.
+ * Users legitimately edit this file and it is not in the base's history, so everything
+ * outside the markers is preserved byte for byte. The block editor works on raw bytes
+ * rather than decoded strings, because filenames are byte strings and need not be UTF-8.
  *
  * Measured on git 2.55 (see the tests in `test/manifest.test.ts`):
  *   * git strips a trailing CR from every pattern line, so a CRLF exclude file works and
@@ -25,6 +21,7 @@ import type { Context } from "./context.ts";
 import type { Manifest } from "./manifest.ts";
 import { pathsOfKind, ownedPaths, comparePaths } from "./manifest.ts";
 import { gitignoreEscape } from "./paths.ts";
+import { writeFileAtomic } from "./files.ts";
 
 /**
  * Marker strings, byte-exact. Do not reformat: `doctor` finds the managed block by matching
@@ -264,25 +261,6 @@ async function readBytes(path: string): Promise<Uint8Array> {
   }
 }
 
-/** Atomic write: sibling temp file, then rename. Creates parent directories. */
-async function writeBytesAtomic(path: string, bytes: Uint8Array): Promise<void> {
-  const fs = await import("node:fs/promises");
-  const { dirname } = await import("node:path");
-  const tmp = `${path}.overgit-tmp-${process.pid}-${Math.random().toString(36).slice(2, 10)}`;
-  try {
-    await fs.mkdir(dirname(path), { recursive: true });
-    await fs.writeFile(tmp, bytes);
-    await fs.rename(tmp, path);
-  } catch (e) {
-    await fs.rm(tmp, { force: true }).catch(() => {});
-    throw new OvergitError("IO_FAILED", `cannot write ${path}: ${(e as Error).message}`, {
-      hint: "check that the directory exists and is writable",
-      paths: [path],
-      cause: e,
-    });
-  }
-}
-
 function baseExcludePath(ctx: Context): string {
   return `${ctx.baseGitDir}/info/exclude`;
 }
@@ -308,7 +286,7 @@ export async function syncExcludeBlock(
     baseTracks ?? new Set((await ctx.base.lsFiles()).filter((e) => e.stage === 0).map((e) => e.path));
   const result = applyManagedBlock(before, desiredExcludeLines(m, tracks));
   if (!result.changed) return { changed: false };
-  await writeBytesAtomic(path, result.bytes);
+  await writeFileAtomic(path, result.bytes);
   return { changed: true };
 }
 
@@ -323,7 +301,7 @@ export async function removeExcludeBlock(ctx: Context): Promise<void> {
   const before = await readBytes(path);
   if (before.length === 0) return;
   const result = applyManagedBlock(before, null);
-  if (result.changed) await writeBytesAtomic(path, result.bytes);
+  if (result.changed) await writeFileAtomic(path, result.bytes);
 }
 
 /**
@@ -334,5 +312,5 @@ export async function ensureOverlayExcludes(ctx: Context): Promise<void> {
   const path = overlayExcludePath(ctx);
   const before = await readBytes(path);
   const result = applyManagedBlock(before, OVERLAY_EXCLUDE_LINES);
-  if (result.changed) await writeBytesAtomic(path, result.bytes);
+  if (result.changed) await writeFileAtomic(path, result.bytes);
 }

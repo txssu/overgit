@@ -1,33 +1,12 @@
 /**
- * Ownership: the three overlay powers and the reconciler that materialises them.
+ * Ownership: the three overlay powers, and the reconciler that materialises them.
  *
- * `takeOwnership` / `whiteout` / `restoreToBase` move a path between "the base's" and
- * "the overlay's". `applyState` is the idempotent reconciler that turns the manifest into
- * work-tree bytes, skip-worktree bits and exclude lines — it is what `overgit apply`,
- * `overgit clone` and `overgit doctor --fix` all ultimately run.
- *
- * Two rules govern every mutation in this file.
- *
- * **Content first.** Overlay content is written into `.overgit/.git/objects` *before*
- * anything else changes, so a crash — or a later `git clean -xfd` in the base — can never
- * lose it. Concretely the mutation order is always:
- *
- *     1. rescue surprising work-tree bytes into `.overgit/local/backups/`
- *     2. write overlay blobs + overlay index entries
- *     3. write the manifest (one atomic write for the whole batch)
- *     4. regenerate the exclude block
- *     5. set skip-worktree bits in the base
- *     6. touch the work-tree
- *
- * The manifest is therefore always written *before* the skip-worktree bits, so an
- * interrupted run leaves "manifest entry, no bit" — which `overgit doctor` reports as
- * `missing-skip-worktree` and can finish — and never the reverse, which would be an
- * invisible ownership claim. `restoreToBase` unwinds in the mirror order for the same
- * reason.
- *
- * **Validate everything, then mutate.** Every public function resolves and checks all of
- * its paths before writing a single byte, so `overgit add a b c d e` with a bad `d` leaves
- * the repo exactly as it found it.
+ * Two rules bind every mutation here. Content first: overlay bytes reach
+ * `.overgit/.git/objects` before anything else moves, and the manifest is written before
+ * the base's skip-worktree bits, so an interrupted run leaves an entry with no bit (which
+ * `doctor` reports as `missing-skip-worktree` and can finish) rather than a bit with no
+ * entry, which would be an ownership claim nothing knows about. And validate everything,
+ * then mutate: a bad path in `overgit add a b c` leaves the repo exactly as it was.
  */
 
 import { OvergitError, ioError, pathError } from "./errors.ts";
@@ -78,16 +57,13 @@ export interface OwnershipChange {
 export interface OwnershipResult {
   changes: OwnershipChange[];
   skipped: { path: string; reason: string }[];
-  /** Additive: root-relative paths of every file written under `.overgit/local/backups/`. */
+  /** Root-relative paths of every file written under `.overgit/local/backups/`. */
   backups: string[];
 }
 
 export interface OwnershipOptions {
   force?: boolean;
-  /**
-   * Additive: treat inputs as already-normalised repo-relative POSIX paths instead of
-   * resolving them against `ctx.cwd`. `sync.ts` and `doctor.ts` hold repo paths already.
-   */
+  /** Inputs are already repo-relative POSIX paths, not to be resolved against `ctx.cwd`. */
   repoRelative?: boolean;
 }
 
@@ -584,7 +560,7 @@ export async function takeOwnership(
   const plans: TakePlan[] = [];
   const seen = new Set<string>();
 
-  // ── validate everything first; nothing below this loop writes ──
+  // validate everything first; nothing below this loop writes
   for (const input of inputs) {
     // Before deciding whether this is a directory to expand: a submodule *is* a directory on
     // disk, so without this the explicit error below would never fire and `overgit add
@@ -730,7 +706,7 @@ export async function takeOwnership(
 
   if (plans.length === 0) return { changes: [], skipped, backups: [] };
 
-  // ── mutate, content first ──
+  // mutate, content first
   let manifest = cloneManifest(s.manifest);
   for (const plan of plans) {
     const oid = await ctx.overlay.hashObject(plan.content, { write: true });
@@ -937,7 +913,7 @@ export async function whiteout(
 
   if (plans.length === 0) return { changes: [], skipped, backups: [] };
 
-  // ── mutate: rescue bytes, then drop overlay tracking, then manifest, then the base ──
+  // mutate: rescue bytes, then drop overlay tracking, then manifest, then the base
   const backups: string[] = [];
   const changes: OwnershipChange[] = [];
 
@@ -1140,7 +1116,7 @@ export async function restoreToBase(
 
   if (plans.length === 0) return { changes: [], skipped, backups: [] };
 
-  // ── mutate: rescue, restore the work-tree, clear bits, then release the claim ──
+  // mutate: rescue, restore the work-tree, clear bits, then release the claim
   const backups: string[] = [];
   const changes: OwnershipChange[] = [];
 
@@ -1341,10 +1317,7 @@ async function applyStateInner(ctx: Context, opts?: ApplyOptions): Promise<Apply
 
 /* ------------------------------------------------------------------ shared helpers */
 
-/**
- * Exported for `doctor.ts` and `sync.ts`: the same "is this path's work-tree entry what we
- * expect" question those modules ask, answered exactly the way `applyState` answers it.
- */
+/** Does the work-tree entry match this oid and mode? The question `applyState` asks. */
 export async function worktreeMatches(
   root: string,
   repoPath: string,
@@ -1355,7 +1328,7 @@ export async function worktreeMatches(
   return st.mode === mode && contentIsOid(st.content, oid);
 }
 
-/** Exported for `doctor.ts`: rescue work-tree bytes with the same layout `applyState` uses. */
+/** Rescue work-tree bytes into `.overgit/local/backups/`, the layout `applyState` uses. */
 export async function rescueWorktreeBytes(
   ctx: Context,
   repoPath: string,
@@ -1366,7 +1339,7 @@ export async function rescueWorktreeBytes(
   return backupBytes(ctx, repoPath, state, reason);
 }
 
-/** Exported for `sync.ts`: read a work-tree file's bytes and git mode without following symlinks. */
+/** A work-tree file's bytes and git mode, never following a symlink. */
 export async function readWorktreeEntry(
   root: string,
   repoPath: string,
@@ -1376,7 +1349,7 @@ export async function readWorktreeEntry(
   return { mode: st.mode!, content: st.content! };
 }
 
-/** Exported for `sync.ts`: stage exact bytes into the overlay index at `repoPath`. */
+/** Stage exact bytes into the overlay index at `repoPath`. */
 export async function stageOverlayContent(
   ctx: Context,
   repoPath: string,
@@ -1388,7 +1361,7 @@ export async function stageOverlayContent(
   return oid;
 }
 
-/** Exported for `sync.ts` / `doctor.ts`: materialise bytes into the work-tree atomically. */
+/** Write bytes into the work-tree atomically, applying git's mode rules. */
 export async function materialise(
   ctx: Context,
   repoPath: string,
@@ -1398,5 +1371,4 @@ export async function materialise(
   await writeWorktreeEntry(ctx, join(ctx.root, repoPath), mode, content);
 }
 
-/** Exported for `doctor.ts`: literal pathspec helper re-exported so callers need one import. */
 export { literalPathspec };

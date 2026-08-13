@@ -1,21 +1,17 @@
 /**
  * The overlay manifest: `<root>/.overgit/manifest.json`.
  *
- * This file is *tracked by the overlay*, so it is the portable description of what the
- * overlay owns. Everything else (skip-worktree bits, the exclude block, the work-tree
- * bytes) is machine-local state that `applyState()` can rebuild from it.
+ * Tracked by the overlay, so it is the portable description of what the overlay owns.
+ * Everything else (skip-worktree bits, the exclude block, the work-tree bytes) is
+ * machine-local state `applyState()` rebuilds from it.
  *
- * Serialisation is deterministic — keys sorted byte-wise, 2-space indent, LF, trailing
- * newline — so two machines that own the same paths produce byte-identical files and
- * merges stay line-oriented.
- *
- * This module deliberately depends on nothing but `errors.ts` and the `Context` *type*.
- * Path validation here is structural (shape of the string) rather than filesystem-aware:
- * `paths.ts` owns the semantics for user-supplied input, this owns the on-disk format.
+ * Validation here is structural, on the shape of the string. `paths.ts` owns the semantics
+ * of user input; this owns the on-disk format.
  */
 
 import { OvergitError } from "./errors.ts";
 import type { Context } from "./context.ts";
+import { writeFileAtomic } from "./files.ts";
 
 export type Entry =
   | { kind: "add" }
@@ -112,14 +108,12 @@ export function cloneManifest(m: Manifest): Manifest {
   return out;
 }
 
-/** Returns a copy of `m` with `path` set to `e`. */
 export function setEntry(m: Manifest, path: string, e: Entry): Manifest {
   const out = cloneManifest(m);
   out.entries[path] = { ...e };
   return out;
 }
 
-/** Returns a copy of `m` with `path` removed. */
 export function removeEntry(m: Manifest, path: string): Manifest {
   const out = cloneManifest(m);
   delete out.entries[path];
@@ -143,9 +137,11 @@ export function pathsOfKind(m: Manifest, kind: Kind): string[] {
 /* ------------------------------------------------------------------ serialisation */
 
 /**
- * Deterministic JSON. Top-level order is `version`, `entries`, then any preserved
- * unknown keys sorted byte-wise. Entry keys are sorted byte-wise; entry fields are
- * `kind` then `baseBlob`.
+ * Deterministic JSON: top-level `version`, `entries`, then preserved unknown keys sorted
+ * byte-wise; entry keys byte-wise; entry fields `kind` then `baseBlob`.
+ *
+ * Byte-identical output on any two machines that own the same paths is what keeps a
+ * manifest merge line-oriented instead of a whole-file conflict.
  */
 export function serializeManifest(m: Manifest): string {
   const known = new Set(["version", "entries"]);
@@ -298,24 +294,10 @@ export async function readManifest(ctx: Context): Promise<Manifest> {
   return parseManifest(text, ctx.manifestPath);
 }
 
-/** Atomic: writes a sibling temp file and renames over the target. */
 export async function writeManifest(ctx: Context, m: Manifest): Promise<void> {
-  const { dirname } = await import("node:path");
-  const fs = await import("node:fs/promises");
-  const dir = dirname(ctx.manifestPath);
-  const tmp = `${ctx.manifestPath}.tmp-${process.pid}-${Math.random().toString(36).slice(2, 10)}`;
-  try {
-    await fs.mkdir(dir, { recursive: true });
-    await fs.writeFile(tmp, serializeManifest(m), "utf8");
-    await fs.rename(tmp, ctx.manifestPath);
-  } catch (e) {
-    await fs.rm(tmp, { force: true }).catch(() => {});
-    throw new OvergitError("IO_FAILED", `cannot write ${ctx.manifestPath}: ${(e as Error).message}`, {
-      hint: "check that .overgit/ exists and is writable",
-      paths: [ctx.manifestPath],
-      cause: e,
-    });
-  }
+  await writeFileAtomic(ctx.manifestPath, serializeManifest(m), {
+    hint: "check that .overgit/ exists and is writable",
+  });
 }
 
 /**

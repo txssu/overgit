@@ -1,43 +1,16 @@
 /**
- * Bootstrap: making an overlay exist on a machine, and unmounting it again.
+ * Bootstrap: making an overlay exist on a machine, and unmounting it again. `initOverlay`,
+ * `cloneOverlay`, `detach`/`attach`, and the opt-in git hooks.
  *
- * Four jobs live here.
+ * One rule governs the clone path: the overlay is never allowed a bulk `git checkout` into
+ * the work-tree, which would write every path it tracks over the base's files with no
+ * backup and no ownership check. So the clone is `--no-checkout`, the index is filled with
+ * `read-tree`, and every byte reaching the work-tree is written by `applyState`, one path
+ * at a time.
  *
- * **`initOverlay`** creates an overlay from nothing: a repository at `.overgit/.git`, an
- * empty manifest, one commit so `HEAD` resolves, and the `/.overgit/` line in the base's
- * `.git/info/exclude` so the base is blind to it from the first second.
- *
- * **`cloneOverlay`** is the one-command bootstrap. It clones the overlay (and optionally
- * the base) and hands over to `applyState`. The rule that governs every line of it:
- *
- * > The overlay is **never** allowed to do a bulk `git checkout` into the work-tree.
- *
- * A bulk checkout would write every path the overlay tracks straight over the base's files
- * with no backup and no ownership check. So the clone is `--no-checkout`, the index is
- * filled with `read-tree` (which does not touch the work-tree), and every byte that reaches
- * the work-tree is written by `applyState`, one path at a time, with backup-on-surprise.
- *
- * **`detach` / `attach`** are the escape hatch for the one measured limitation of
- * skip-worktree: git aborts `git pull` and `git checkout <branch>` when upstream touches a file the
- * overlay overrides. `detach` turns the work-tree back into a byte-exact pristine base
- * checkout, `attach` (`applyState` plus clearing the marker) puts the overlay back.
- *
- * **`hooksInstall` / `hooksUninstall`** are strictly opt-in. They write a managed block
- * into `post-merge`, `post-checkout` and `post-rewrite`, preserving whatever was there.
- *
- * ## Interruption safety
- *
- * Every clone happens in `.overgit/.clone-<pid>-<rand>/` and the finished git dir is
- * `rename`d into place, so `.overgit/.git` either does not exist or is a complete
- * repository — never something in between. Anything a killed run can leave behind is
- * recoverable by the next run:
- *
- * | killed during           | left behind                    | next run does            |
- * |-------------------------|--------------------------------|--------------------------|
- * | `git clone`             | `.overgit/.clone-*`            | deletes it, clones again |
- * | after `rename`          | a repo with no config/index    | re-configures, re-reads  |
- * | `read-tree` / manifest  | empty index / missing manifest | redoes both              |
- * | `applyState`            | a partly built work-tree       | `applyState` is idempotent |
+ * Interruption safety comes from cloning into `.overgit/.clone-<pid>-<rand>/` and renaming
+ * the finished git dir into place, so `.overgit/.git` is either absent or complete. What a
+ * killed run leaves behind is deleted or redone by the next one.
  */
 
 import { existsSync, realpathSync } from "node:fs";
@@ -47,7 +20,7 @@ import { dirname, join, resolve } from "node:path";
 import { OvergitError } from "./errors.ts";
 import { Git } from "./git.ts";
 import { detachMarkerPath, discover, pidIsAlive, withLock, type Context } from "./context.ts";
-import { entryKind, pathExists, pruneEmptyParents } from "./files.ts";
+import { entryKind, pathExists, pruneEmptyParents, writeFileAtomic } from "./files.ts";
 import {
   MANIFEST_REPO_PATH,
   emptyManifest,
@@ -94,29 +67,6 @@ const OVERLAY_CONFIG: ReadonlyArray<readonly [string, string]> = [
 
 function scratchName(prefix: string): string {
   return `${prefix}${process.pid}-${Math.random().toString(36).slice(2, 10)}`;
-}
-
-/** Distinct from `errors.ioError`: this one is raised on the way *out*, not the way in. */
-function writeError(path: string, e: unknown): OvergitError {
-  return new OvergitError("IO_FAILED", `cannot write ${path}: ${(e as Error).message}`, {
-    hint: "check that the directory exists and is writable",
-    paths: [path],
-    cause: e,
-  });
-}
-
-/** Atomic write via a sibling temp file, optionally preserving a file mode. */
-async function writeFileAtomic(path: string, bytes: Uint8Array, mode?: number): Promise<void> {
-  const tmp = `${path}.overgit-tmp-${process.pid}-${Math.random().toString(36).slice(2, 10)}`;
-  try {
-    await fs.mkdir(dirname(path), { recursive: true });
-    await fs.writeFile(tmp, bytes);
-    if (mode !== undefined) await fs.chmod(tmp, mode);
-    await fs.rename(tmp, path);
-  } catch (e) {
-    await fs.rm(tmp, { force: true }).catch(() => {});
-    throw writeError(path, e);
-  }
 }
 
 /**
@@ -324,7 +274,7 @@ export interface InitOptions {
 export interface InitResult {
   ctx: Context;
   created: boolean;
-  /** Additive: the branch `HEAD` points at, and the remote that was configured. */
+  /** The branch `HEAD` points at, and the remote that was configured. */
   branch: string | null;
   remote: string | null;
 }
@@ -717,25 +667,16 @@ export async function clearDetachMarker(ctx: Context): Promise<boolean> {
 /**
  * Unmount the overlay: make the work-tree a byte-exact pristine base checkout.
  *
- * The order is dictated by the safety invariant — *overlay content is never only in the
- * work-tree*:
+ * Content moves before metadata, so `git status` never blinks: work-tree bytes are staged
+ * into the overlay index before anything overwrites them, and the base's own bytes come
+ * from its *index* rather than HEAD, because that is what `git status` compares against
+ * once skip-worktree has frozen it.
  *
- *  1. stage every `add`/`override` path's current work-tree bytes into the overlay index,
- *     so whatever is about to be overwritten is already in `.overgit/.git/objects`;
- *  2. restore the base's own bytes for every `override` and whiteout (from the base
- *     **index**, which is what `git status` compares against once skip-worktree freezes it);
- *  3. delete overlay-added files;
- *  4. clear the skip-worktree bits — content first, so `git status` never blinks;
- *  5. shrink the exclude block back to `/.overgit/`;
- *  6. write the marker.
+ * The exclude block shrinks to `/.overgit/` but never loses that line: without it a
+ * `git add -A` while detached would commit the whole overlay repository into the base.
  *
- * Step 5 keeps `/.overgit/` deliberately. Dropping it would expose the overlay's own
- * storage to the base, and a `git add -A` in the detached state would commit the whole
- * overlay repository into the base's history.
- *
- * Detaching an already-detached work-tree does nothing at all — re-running step 1 would
- * stage the *base's* bytes over the overlay's content, which is the one way this operation
- * could lose data.
+ * Detaching an already-detached work-tree does nothing, because re-staging would put the
+ * base's bytes over the overlay's content. That is the one way this could lose data.
  */
 export async function detach(ctx: Context, opts: DetachOptions = {}): Promise<DetachReport> {
   if (!ctx.hasOverlay) {
@@ -770,7 +711,7 @@ export async function detach(ctx: Context, opts: DetachOptions = {}): Promise<De
     const restored: string[] = [];
     const removed: string[] = [];
 
-    // ── 0. claim the detach BEFORE touching anything ──
+    // Claim the detach before touching anything
     //
     // The marker used to be written last, which made an interrupted detach silently
     // destructive: a kill after step 2 leaves base-pristine bytes in the work-tree and no
@@ -799,7 +740,7 @@ export async function detach(ctx: Context, opts: DetachOptions = {}): Promise<De
       ),
     );
 
-    // ── 1. content first ──
+    // Content first
     for (const p of paths) {
       if (m.entries[p]!.kind === "delete") continue;
       const wt = await readWorktreeEntry(ctx.root, p);
@@ -834,7 +775,7 @@ export async function detach(ctx: Context, opts: DetachOptions = {}): Promise<De
       }
     }
 
-    // ── 2/3. base-pristine bytes back, overlay-added files gone ──
+    // Base-pristine bytes back, overlay-added files gone
     for (const p of paths) {
       const entry = m.entries[p]!;
       const abs = join(ctx.root, p);
@@ -907,7 +848,7 @@ export async function detach(ctx: Context, opts: DetachOptions = {}): Promise<De
       actions.push({ path: p, action: "restore-base" });
     }
 
-    // ── 3a. refresh the base's cached stat data ──
+    // Refresh the base's cached stat data
     //
     // `checkout-index` writes the file but leaves the index's cached stat info describing
     // the *previous* file, so `git status` reports ` M <path>` on a byte-correct work-tree
@@ -919,7 +860,7 @@ export async function detach(ctx: Context, opts: DetachOptions = {}): Promise<De
       await ctx.base.run(["update-index", "-q", "--refresh"], { allowFailure: true });
     }
 
-    // ── 3b. prune directories that existed only to hold overlay-added files ──
+    // Prune directories that existed only to hold overlay-added files
     // git cannot represent an empty directory, so a plain clone of the base never has one.
     // Leaving `scripts/` behind after deleting `scripts/dev.sh` would make a detached
     // work-tree distinguishable from a pristine checkout, which is the property `detach`
@@ -931,17 +872,17 @@ export async function detach(ctx: Context, opts: DetachOptions = {}): Promise<De
     }
     for (const d of pruned) actions.push({ path: d, action: "prune-dir" });
 
-    // ── 4. release the index bits ──
+    // Release the index bits
     const clearedSkip = paths.filter(
       (p) => m.entries[p]!.kind !== "add" && baseIndex.has(p) && baseSkip.has(p),
     );
     await ctx.base.clearSkipWorktree(clearedSkip);
     for (const p of clearedSkip) actions.push({ path: p, action: "clear-skip" });
 
-    // ── 5. the exclude block shrinks to `/.overgit/` and nothing else ──
+    // The exclude block shrinks to `/.overgit/` and nothing else
     await syncExcludeBlock(ctx, emptyManifest());
 
-    // ── 6. finalise the marker written in step 0 ──
+    // Finalise the marker claimed at the top
     const record: DetachMarker = {
       version: 1,
       detachedAt: new Date().toISOString(),
@@ -1168,7 +1109,7 @@ export async function hooksInstallReport(ctx: Context): Promise<HookChange[]> {
       out.push({ hook, path, action: "unchanged", ...(warning ? { warning } : {}) });
       continue;
     }
-    await writeFileAtomic(path, result.bytes, mode);
+    await writeFileAtomic(path, result.bytes, { mode });
     if (!existed) created.add(hook);
     out.push({
       hook,
@@ -1222,7 +1163,7 @@ export async function hooksUninstallReport(ctx: Context): Promise<HookChange[]> 
       out.push({ hook, path, action: "removed" });
       continue;
     }
-    await writeFileAtomic(path, result.bytes, st.mode & 0o7777);
+    await writeFileAtomic(path, result.bytes, { mode: st.mode & 0o7777 });
     created.delete(hook);
     out.push({ hook, path, action: "updated" });
   }

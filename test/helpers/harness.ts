@@ -30,7 +30,6 @@ import {
   chmod,
 } from "node:fs/promises";
 import { rmSync, realpathSync } from "node:fs";
-import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 
 import {
@@ -46,14 +45,11 @@ import {
   globalGitConfig,
   HOST_TMPDIR,
   TEST_EPOCH,
-  TEST_USER_EMAIL,
-  TEST_USER_NAME,
 } from "./env.ts";
 import {
   envForPath,
   registerSandbox,
   unregisterSandbox,
-  isPathInside,
   type RegisteredSandbox,
 } from "./registry.ts";
 import {
@@ -250,15 +246,6 @@ export async function overgitOk(
   ...args: string[]
 ): Promise<CmdResult> {
   return expectOk(await overgit(cwd, ...args));
-}
-
-/**
- * Cheap probe: does the CLI load at all? Useful for a skip-guard while other builders are
- * still writing `src/`.
- */
-export async function cliAvailable(): Promise<boolean> {
-  const r = await overgitRun(PROJECT_ROOT, ["--version"], { timeoutMs: 20_000 });
-  return !looksLikeMissingCli(r);
 }
 
 /* ----------------------------------------------------------------------- Repo */

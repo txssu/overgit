@@ -8,8 +8,8 @@
  * ever grows its own diff algorithm, these tests go red.
  *
  * Everything runs against throwaway repos in temp dirs with a hermetic git config and no
- * network. `src/sync.ts` is driven in-process (the CLI does not exist yet — see the note
- * in `test/sync.test.ts`), but nothing is mocked: real git, real objects, real work-tree.
+ * network. `src/sync.ts` is driven in-process, as in `test/sync.test.ts`, but nothing is
+ * mocked: real git, real objects, real work-tree.
  */
 
 import { afterEach, describe, expect, test } from "bun:test";

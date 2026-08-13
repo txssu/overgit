@@ -27,7 +27,6 @@ import {
   serializeManifest,
   setEntry,
   writeManifest,
-  type Manifest,
 } from "../src/manifest.ts";
 import {
   applyManagedBlock,
@@ -100,7 +99,7 @@ afterEach(async () => {
 
 afterAll(cleanupAllSandboxes);
 
-/** Minimal overlay so `discover` finds one; `bootstrap.ts` is a different builder's file. */
+/** Minimal overlay so `discover` finds one, without pulling in `bootstrap.ts`. */
 async function mkOverlay(repo: Repo): Promise<Context> {
   // `.overgit/` is an ordinary git repository directory.
   await repo.git("init", "--quiet", "-b", "main", ".overgit");

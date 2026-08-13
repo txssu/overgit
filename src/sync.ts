@@ -1,44 +1,19 @@
 /**
  * Upstream sync: reconciling base movement into overlay-owned paths.
  *
- * This is the part that has to survive reality. The base repo keeps moving — someone
- * pulls, someone rebases — and every overlay-owned path has to be re-decided against the
- * new upstream state. The manifest records, per path, the base blob the overlay forked
- * from (`baseBlob`). That blob is the **merge base** of a true three-way merge:
+ * The manifest records, per path, the base blob the overlay forked from (`baseBlob`), and
+ * that blob is the merge base of a true three-way merge: ours is the overlay's current
+ * bytes, theirs is `HEAD:<path>`.
  *
- *     base   = the recorded fork-point blob        (manifest `baseBlob`)
- *     ours   = the overlay's current bytes         (work-tree, which is what the user sees)
- *     theirs = the base's current bytes            (`HEAD:<path>`)
+ * Three rules, each because breaking it loses data. `baseBlob` advances only when a path is
+ * fully resolved, so a conflict re-merges from the same base next time instead of forgetting
+ * what the overlay diverged from. A conflict blocks that path and nothing else, and an
+ * override keeps its skip-worktree bit while conflicted, so even a work-tree full of markers
+ * stays invisible to the base. And nothing is overwritten before the old bytes are hashed
+ * into the *overlay* object store, so `--abort` can restore them after a reboot.
  *
- * Five rules govern everything below. Each of them exists because breaking it loses data
- * or lies to the user.
- *
- * 1. **`baseBlob` advances only when a path is fully resolved.** A clean merge resolves a
- *    path; a conflict does not. A conflicted path keeps its old fork point so the next
- *    `overgit sync` re-merges from the same base instead of silently forgetting what the
- *    overlay diverged from.
- * 2. **A conflict blocks that path and nothing else.** Every other path in the same run is
- *    still synced, and the work-tree stays valid for `status` / `doctor` / `apply`.
- *    Overrides keep their skip-worktree bit while conflicted, so a work-tree full of
- *    conflict markers is *still* invisible to the base.
- * 3. **Deletions and collisions are decisions, never guesses.** Upstream deleting an
- *    overridden file, or upstream adding a path the overlay `add`s, have no correct
- *    automatic answer. They are recorded and handed back to the user.
- * 4. **Nothing is written before the previous bytes are recoverable.** Every path this
- *    module rewrites is first hashed into the *overlay* object store (so `--abort` can
- *    restore it byte-for-byte even after a reboot) and, when those bytes were not already
- *    reachable from the overlay index, copied into `.overgit/local/backups/`.
- * 5. **Binary content is never merged with text machinery, and never faked as a conflict.**
- *    `git merge-file` refuses binary input outright, and writing conflict markers into a PNG
- *    would corrupt it. So binary and symlink divergence is a **decision**
- *    (`binary-conflict`), not a `conflict`: with no markers to edit there is no trustworthy
- *    "I resolved it" signal, and a marker-based flow would let `sync --continue` stage the
- *    untouched overlay bytes and advance the fork point — silently discarding upstream's
- *    revision while recording it as merged.
- *
- * A sync in progress lives in `.overgit/local/sync-state.json`, written atomically after
- * every path, so a kill -9 or a reboot leaves a state that `--continue` or `--abort` can
- * finish. Starting a second sync on top of one refuses with `SYNC_IN_PROGRESS`.
+ * A sync in progress lives in `.overgit/local/sync-state.json`, rewritten after every path,
+ * so a kill -9 leaves a state `--continue` or `--abort` can finish.
  */
 
 import { OvergitError, pathError } from "./errors.ts";
@@ -56,6 +31,7 @@ import {
   writeManifest,
 } from "./manifest.ts";
 import { syncExcludeBlock } from "./exclude.ts";
+import { writeFileAtomic } from "./files.ts";
 import {
   materialise,
   readWorktreeEntry,
@@ -103,8 +79,6 @@ export interface PlanItem {
   /** the base's current blob for the path (`null` when the base no longer tracks it) */
   toBlob: string | null;
 
-  /* ---- additive: all optional, so an older caller still type-checks ---- */
-
   /** True when the content cannot be text-merged (binary, or a symlink whose target moved). */
   binary?: boolean;
   /** Conflict hunk count from `git merge-file` (saturates at 127). */
@@ -118,7 +92,7 @@ export interface SyncPlan {
   needsDecision: PlanItem[];
   clean: PlanItem[];
   conflicts: PlanItem[];
-  /** Additive: `local-missing` paths — sync refuses them and does not touch them. */
+  /** `local-missing` paths: sync refuses them and does not touch them. */
   blocked: PlanItem[];
 }
 
@@ -138,8 +112,6 @@ export interface SyncReport {
   pendingDecision: PlanItem[];
   /** Paths that were already in sync. */
   unchanged: string[];
-
-  /* ---- additive ---- */
 
   /** Whiteouts whose upstream moved: the file was re-removed and `baseBlob` advanced. */
   whiteoutsRepaired: string[];
@@ -184,8 +156,6 @@ export interface SyncState {
   decisions: PlanItem[];
   merged: string[];
 
-  /* ---- additive ---- */
-
   version: number;
   style: "merge" | "diff3" | "zdiff3";
   /** Serialised manifest as it was before the sync started. `abortSync` restores it. */
@@ -222,22 +192,10 @@ function slugify(p: string): string {
 
 /* ------------------------------------------------------------------ sync state i/o */
 
-/** Atomic: sibling temp file, fsync-free rename. Never leaves a half-written state. */
 async function writeSyncState(ctx: Context, state: SyncState): Promise<void> {
-  const path = syncStatePath(ctx);
-  const tmp = `${path}.tmp-${process.pid}-${Math.random().toString(36).slice(2, 10)}`;
-  try {
-    await fs.mkdir(ctx.localDir, { recursive: true });
-    await fs.writeFile(tmp, JSON.stringify(state, null, 2) + "\n", "utf8");
-    await fs.rename(tmp, path);
-  } catch (e) {
-    await fs.rm(tmp, { force: true }).catch(() => {});
-    throw new OvergitError("IO_FAILED", `cannot write ${path}: ${(e as Error).message}`, {
-      hint: "check that .overgit/local/ exists and is writable",
-      paths: [path],
-      cause: e,
-    });
-  }
+  await writeFileAtomic(syncStatePath(ctx), JSON.stringify(state, null, 2) + "\n", {
+    hint: "check that .overgit/local/ exists and is writable",
+  });
 }
 
 /**

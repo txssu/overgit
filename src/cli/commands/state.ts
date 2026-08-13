@@ -5,7 +5,7 @@
 
 import { withLock } from "../../context.ts";
 import { EXIT } from "../../errors.ts";
-import type { Problem } from "../../doctor.ts";
+import { PROBLEM_DESCRIPTIONS, type Problem } from "../../doctor.ts";
 import { boolFlag, rejectArgs } from "../args.ts";
 import type { CommandSpec, Env } from "../command.ts";
 import { openContext, reportApply, reportBackups, warnDeclined } from "../common.ts";
@@ -158,7 +158,11 @@ export const doctorCommand: CommandSpec = {
     "without a copy under .overgit/local/backups/.",
     "",
     "Exit codes: 0 clean; 4 problems found (or problems remaining after `--fix`).",
-    "That makes `overgit doctor` usable as a CI check.",
+    "That makes `overgit doctor` usable as a CI check. An in-progress sync is a state,",
+    "not a problem, so it does not by itself make doctor exit 4.",
+    "",
+    "Every id `--porcelain` can emit, in report order:",
+    ...columns(Object.entries(PROBLEM_DESCRIPTIONS).map(([id, what]) => [id, what])),
   ],
   examples: [
     { cmd: "overgit doctor", what: "what is wrong?" },

@@ -6,12 +6,12 @@
  * an interrupted run can be finished or undone, and whether the base repo can ever tell
  * that any of it happened.
  *
- * **Deviation from the harness convention, declared:** these tests drive `src/sync.ts` in process
- * rather than spawning `bin/overgit`. `src/cli/main.ts` does not exist yet, so there is no
- * CLI to spawn; the module is the only surface available. Nothing else is faked — real
- * repos in temp dirs, real `git`, real work-tree bytes, hermetic config, no network. The
- * interrupted-sync test *does* use a real separate process, because that is the only
- * honest way to be killed mid-run.
+ * Deviation from the harness convention, declared: these drive `src/sync.ts` in process
+ * rather than spawning `bin/overgit`, because sync's contract is the module API and the
+ * plan/continue/abort states are easier to inspect there. Nothing is faked: real repos in
+ * temp dirs, real `git`, real work-tree bytes, hermetic config, no network. The
+ * interrupted-sync test does spawn a separate process, because that is the only honest way
+ * to be killed mid-run.
  */
 
 import { afterEach, describe, expect, test } from "bun:test";

@@ -71,7 +71,7 @@ export interface MergedStatus {
    */
   problems: number;
 
-  /* Additive: the states a base `git` command can leave behind, which status must report. */
+  /* States a base `git` command can leave behind, which status has to report. */
 
   /** True when `.overgit/local/detached` exists, i.e. the overlay is unmounted. */
   detached: boolean;
@@ -250,7 +250,7 @@ export async function computeStatus(ctx: Context): Promise<MergedStatus> {
     const tree = overlayTree.get(p);
     const wt = await probe(join(ctx.root, p));
 
-    // ── upstream: the base's HEAD versus the blob we forked from ──
+    // upstream: the base's HEAD versus the blob we forked from
     let upstream: OverlayFileStatus["upstream"];
     if (entry.kind === "add") {
       // The collision case: the base has started tracking a path the overlay added.

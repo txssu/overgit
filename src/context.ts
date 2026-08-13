@@ -31,8 +31,8 @@ export interface Context {
    */
   baseGitDir: string;
   /**
-   * Additive: the per-worktree git dir (`.git/worktrees/<name>` inside a linked worktree),
-   * which is where that worktree's `index` lives. Equal to `baseGitDir` for ordinary repos.
+   * Where this worktree's `index` lives: `.git/worktrees/<name>` inside a linked worktree,
+   * equal to `baseGitDir` for an ordinary repo.
    */
   baseWorktreeGitDir: string;
   overgitDir: string;
@@ -248,7 +248,7 @@ export async function discover(
   };
 }
 
-// ── machine-local state files ───────────────────────────────────────────────────────
+/* ----------------------------------------- machine-local state files */
 
 /**
  * Everything under `.overgit/local/` is machine-local: never tracked by the overlay, and
@@ -274,7 +274,7 @@ export function detachMarkerPath(ctx: Context): string {
 /** Root-relative directory holding rescued work-tree bytes. Reported to the user as-is. */
 export const BACKUP_REL = ".overgit/local/backups";
 
-// ── advisory lock ───────────────────────────────────────────────────────────────────
+/* ----------------------------------------------------- advisory lock */
 
 /**
  * Re-entrant per lock file: nested `withLock` calls in one process share the acquisition

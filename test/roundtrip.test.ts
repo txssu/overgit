@@ -21,21 +21,11 @@
  * merged tree" means.
  */
 
-import { afterAll, beforeAll, expect, test } from "bun:test";
-import { existsSync } from "node:fs";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { afterAll, expect, test } from "bun:test";
 
 import {
-  BUN_BIN,
-  CLI_ENTRY,
-  DEFAULT_TIMEOUT_MS,
-  PROJECT_ROOT,
   cleanupAllSandboxes,
   compareTrees,
-  describeResult,
-  envForPath,
   expectOk,
   formatTree,
   makeSandbox,
@@ -51,128 +41,10 @@ import { assertCleanSafe } from "./helpers/clean.ts";
 
 /* ==================================================================== the CLI runner */
 
-/**
- * Equivalent of `bin/overgit`, used only while `src/cli/**` does not load. Kept in step
- * with the copy in `bootstrap.test.ts`; both exist so each test file runs standalone.
- */
-const DRIVER_SOURCE = `
-const ROOT = ${JSON.stringify(PROJECT_ROOT)};
-const bs = await import(ROOT + "/src/bootstrap.ts");
-const ctxmod = await import(ROOT + "/src/context.ts");
-const own = await import(ROOT + "/src/ownership.ts");
-const mani = await import(ROOT + "/src/manifest.ts");
-const errs = await import(ROOT + "/src/errors.ts");
-
-const argv = Bun.argv.slice(2);
-const cwd = process.cwd();
-const value = (name) => {
-  const i = argv.indexOf(name);
-  if (i < 0) return undefined;
-  const v = argv[i + 1];
-  argv.splice(i, 2);
-  return v;
-};
-const flag = (name) => {
-  const i = argv.indexOf(name);
-  if (i < 0) return false;
-  argv.splice(i, 1);
-  return true;
-};
-const ctx = () => ctxmod.discover(cwd, { requireOverlay: true });
-
-try {
-  const cmd = argv.shift();
-  if (cmd === "init") {
-    const r = await bs.initOverlay(cwd, { remote: value("--remote"), branch: value("--branch") });
-    console.log("initialised an empty overlay in " + r.ctx.overgitDir);
-  } else if (cmd === "clone") {
-    const baseUrl = value("--base");
-    const branch = value("--branch");
-    const overlayUrl = argv.shift();
-    const dir = argv.shift();
-    const r = await bs.cloneOverlay({ overlayUrl, baseUrl, dir, cwd, branch });
-    console.log(
-      (r.alreadyPresent ? "already bootstrapped: " : "bootstrapped ") + r.owned + " path(s) in " + r.root,
-    );
-  } else if (cmd === "apply" || cmd === "attach") {
-    console.log("apply: changed=" + (await bs.attach(await ctx(), { dryRun: flag("--dry-run") })).changed);
-  } else if (cmd === "detach") {
-    console.log("detach: alreadyDetached=" + (await bs.detach(await ctx(), { force: flag("--force") })).alreadyDetached);
-  } else if (cmd === "add") {
-    for (const c of (await own.takeOwnership(await ctx(), argv, { force: flag("--force") })).changes) {
-      console.log(c.from + " -> " + c.to + "  " + c.path);
-    }
-  } else if (cmd === "rm") {
-    for (const c of (await own.whiteout(await ctx(), argv, { force: flag("--force") })).changes) {
-      console.log(c.from + " -> " + c.to + "  " + c.path);
-    }
-  } else if (cmd === "commit") {
-    const c = await ctx();
-    const msg = value("-m") ?? "overgit commit";
-    const m = await mani.readManifest(c);
-    for (const p of mani.ownedPaths(m)) {
-      if (m.entries[p].kind === "delete") continue;
-      const wt = await own.readWorktreeEntry(c.root, p);
-      if (wt) await own.stageOverlayContent(c, p, wt.mode, wt.content);
-    }
-    console.log(await c.overlay.commit(msg));
-  } else if (cmd === "push" || cmd === "git") {
-    const c = await ctx();
-    const r = await c.overlay.run(cmd === "git" ? argv : [cmd, ...argv], { allowFailure: true });
-    process.stdout.write(r.stdout);
-    process.stderr.write(r.stderr);
-    process.exit(r.code);
-  } else if (cmd === "--version") {
-    console.log("overgit 0.1.0 (test driver)");
-  } else {
-    process.stderr.write("error: unknown command " + cmd + "\\n");
-    process.exit(2);
-  }
-} catch (e) {
-  if (errs.isOvergitError(e)) {
-    process.stderr.write("error: " + e.message + "\\n");
-    for (const d of e.details) process.stderr.write("  " + d + "\\n");
-    if (e.hint) process.stderr.write("  hint: " + e.hint + "\\n");
-    process.exit(e.exitCode);
-  }
-  process.stderr.write("error: " + (e && e.message) + "\\n" + (e && e.stack) + "\\n");
-  process.exit(1);
-}
-`;
-
-let driverDir: string | null = null;
-let driverPath: string | null = null;
-let useRealCli = false;
-
-beforeAll(async () => {
-  if (existsSync(join(PROJECT_ROOT, "src", "cli", "main.ts"))) {
-    const probe = await realOvergit(PROJECT_ROOT, "--version");
-    if (probe.code === 0) {
-      useRealCli = true;
-      return;
-    }
-    console.warn(
-      `[roundtrip.test] ${CLI_ENTRY} exists but \`--version\` exited ${probe.code}; ` +
-        `driving src/bootstrap.ts directly instead.\n${describeResult(probe)}`,
-    );
-  }
-  driverDir = await mkdtemp(join(tmpdir(), "overgit-p5-rt-driver-"));
-  driverPath = join(driverDir, "overgit-driver.ts");
-  await writeFile(driverPath, DRIVER_SOURCE);
-});
-
-afterAll(async () => {
-  await cleanupAllSandboxes();
-  if (driverDir) await rm(driverDir, { recursive: true, force: true });
-});
+afterAll(cleanupAllSandboxes);
 
 async function og(cwd: string, ...args: string[]): Promise<CmdResult> {
-  if (useRealCli) return realOvergit(cwd, ...args);
-  return runCommand([BUN_BIN, driverPath!, ...args], {
-    cwd,
-    env: envForPath(cwd),
-    timeoutMs: DEFAULT_TIMEOUT_MS,
-  });
+  return realOvergit(cwd, ...args);
 }
 
 async function ogOk(cwd: string, ...args: string[]): Promise<CmdResult> {

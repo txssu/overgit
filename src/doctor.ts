@@ -1,49 +1,17 @@
 /**
- * doctor — find and fix every inconsistency between the overlay's metadata, the base's
- * index flags, and the work-tree.
+ * doctor: find and fix disagreements between the manifest, the overlay repo, and the base
+ * repo plus work-tree. Ordinary git in the base moves the third one behind overgit's back.
  *
- * Three stores have to agree:
+ * The hardest judgement here is drift (git wrote something) versus work (the user edited
+ * their file and has not committed). Both look identical in the abstract, so the answer
+ * comes from what the bytes are: absent, or hashing to a blob the base records for that
+ * path, means drift and is safe to overwrite. Anything else is work, never reported and
+ * never repaired. The exception is a pure mode difference, fixed because a chmod cannot
+ * lose content and a silently dropped exec bit is a real footgun.
  *
- *   * `.overgit/manifest.json`   — what the overlay *claims* to own (portable),
- *   * the overlay repo           — where the overlay's content actually lives,
- *   * the base repo + work-tree  — skip-worktree bits, `.git/info/exclude`, the bytes.
- *
- * Ordinary `git` in the base moves the third one behind our back — `git clean -xfd` removes
- * overlay-added files, a `git pull` resurrects a whiteout or overwrites an added path (all
- * measured on git 2.55) — and users move all three by hand. `diagnose` names the
- * disagreement;
- * `repair` fixes the ones that can be fixed without guessing.
- *
- * ## The line between drift and work
- *
- * The single hardest judgement here is telling *drift* (git or a tool wrote something we
- * did not ask for) from *work* (the user edited their file and has not committed yet).
- * Both look identical in the abstract — the work-tree differs from the overlay index — so
- * the distinction is drawn from *what the bytes are*:
- *
- *   * work-tree entry **absent** → drift. `git clean -xfd` removes overlay-added files,
- *     `git stash -a` stashes them. The overlay still has the content, so restoring is free.
- *   * work-tree bytes are **the base's** (they hash to a blob the base's index or HEAD
- *     records for that path) → drift. Only git puts the base's version there. The bytes
- *     are in the base's object store, so overwriting them loses nothing.
- *   * anything else → **work**. Never reported, never repaired. `overgit status` shows it
- *     as `worktreeDirty` and `overgit commit` records it.
- *
- * The one exception is a pure mode difference (same bytes, exec bit flipped): that is
- * reported and fixed, because no content can be lost by a `chmod` and a silently dropped
- * exec bit after a restore is a real footgun.
- *
- * ## Repair rules
- *
- *   * every fix is idempotent — `repair` re-checks the live state before acting, so a
- *     second run has nothing to do;
- *   * nothing is deleted or overwritten unless the bytes are recoverable from the overlay
- *     or the base; otherwise they are rescued into `.overgit/local/backups/` first and the
- *     path is reported;
- *   * when the base is mid-merge/mid-rebase, or a sync is in progress, every fix that
- *     would touch the base's index or the work-tree is downgraded to "not fixable" with a
- *     hint that names the blocking operation. Doctor never makes a half-finished operation
- *     worse.
+ * Every fix re-checks the live state before acting, so a second run has nothing to do, and
+ * nothing is deleted unless it is recoverable from the overlay or the base, or has been
+ * rescued into `.overgit/local/backups/` first.
  */
 
 import { join, relative as pathRelative, resolve as pathResolve, sep } from "node:path";
@@ -85,67 +53,53 @@ import { isReservedPath } from "./paths.ts";
 /* ------------------------------------------------------------------ public types */
 
 /**
- * Stable problem ids — `--porcelain` output and the tests key off these strings.
- *
- * The first block is the original minimum: the ways the three stores can disagree on paper.
- * The second is additive — states that only turned up once real git and real users were let
- * near it.
+ * Every problem id, with the one line `overgit help doctor` prints for it. The ids are a
+ * stable contract: `--porcelain` emits them and the tests key off them. Keeping the text
+ * here is what stops "documented" and "exists" from drifting apart.
  */
-export const PROBLEM_IDS = [
-  /* the original minimum */
-  "no-overlay-head",
-  "manifest-unreadable",
-  "manifest-missing",
-  "orphan-manifest-entry",
-  "orphan-overlay-file",
-  "missing-skip-worktree",
-  "stray-skip-worktree",
-  "missing-exclude-line",
-  "stale-exclude-line",
-  "worktree-content-drift",
-  "whiteout-resurrected",
-  "base-blob-missing",
-  "upstream-gone",
-  "add-now-tracked-by-base",
-  "sync-in-progress",
-  "overlay-config-broken",
-  "gitignore-pollution",
-  "case-collision",
-  "interrupted-lock",
-  /* additive */
-  "no-overlay",
-  "duplicate-exclude-block",
-  "assume-unchanged-set",
-  "overlay-index-missing-entry",
-  "manifest-not-tracked",
-  "whiteout-tracked-by-overlay",
-  "worktree-mode-drift",
-  "worktree-type-changed",
-  "path-blocked",
-  "base-operation-in-progress",
-  "base-detached-head",
-  "base-index-diverged",
-  "base-unmerged-path",
-  "pull-blocked-by-override",
-  "overlay-detached",
-  "stale-detach-marker",
-  "clean-unprotected",
-  /**
-   * `core.sparseCheckout=true` in the base. Reported alone, because git then clears the
-   * skip-worktree bit on every override present in the work-tree and all the other findings
-   * become symptoms of this one.
-   */
-  "base-sparse-checkout",
-  /**
-   * `.overgit/manifest.json` is gone. Distinct from `manifest-unreadable` (corrupt) because
-   * the recovery differs: a missing manifest is usually still in the overlay's own history,
-   * and because `readManifest` silently returns an *empty* manifest for a missing file, this
-   * state otherwise masquerades as "the overlay owns nothing".
-   */
-  "manifest-missing",
-] as const;
+export const PROBLEM_DESCRIPTIONS = {
+  "no-overlay": "there is no overlay in this repository",
+  "no-overlay-head": "the overlay has no commits, so its content cannot be pushed",
+  "clean-unprotected": "`.overgit/` is not a repository, so `git clean -xfd` would delete it",
+  "overlay-config-broken": "the overlay repo's core.worktree, core.bare or exclude is wrong",
+  "manifest-missing": "the manifest file is gone (usually still in the overlay's history)",
+  "manifest-unreadable": "the manifest is present but does not parse",
+  "manifest-not-tracked": "the manifest is not staged, so a push publishes an unusable overlay",
+  "orphan-manifest-entry": "the manifest claims a path the overlay has no content for",
+  "orphan-overlay-file": "the overlay tracks a path the manifest does not record",
+  "overlay-index-missing-entry": "in overlay HEAD but not its index; the next commit drops it",
+  "whiteout-tracked-by-overlay": "a whited-out path still has content in the overlay",
+  "missing-skip-worktree": "an override or whiteout the base can see, so it is not hidden",
+  "stray-skip-worktree": "the base's bit is set on a path the overlay does not own",
+  "assume-unchanged-set": "the base also carries assume-unchanged, which hides real changes",
+  "base-index-diverged": "a staged base change frozen by skip-worktree; `git diff --cached` sticks",
+  "base-blob-missing": "the recorded fork-point blob is not in the base's object store",
+  "missing-exclude-line": "the managed exclude block is absent or short a line",
+  "stale-exclude-line": "the managed block lists a path the overlay no longer owns",
+  "duplicate-exclude-block": "more than one managed block; only the first is authoritative",
+  "gitignore-pollution": "overgit's local state is in a .gitignore the base tracks",
+  "worktree-content-drift": "an owned path is missing, or holds the base's bytes",
+  "worktree-mode-drift": "the overlay's exact content, but the wrong file mode",
+  "worktree-type-changed": "file became a symlink (or the reverse) with different content",
+  "whiteout-resurrected": "a whited-out file is back in the work-tree",
+  "path-blocked": "a directory or special file occupies a path the overlay owns",
+  "case-collision": "the work-tree has the same name in a different case",
+  "add-now-tracked-by-base": "the base started tracking a path the overlay added",
+  "upstream-gone": "the base no longer tracks a path the overlay overrides or whites out",
+  "pull-blocked-by-override": "a base `git pull` will abort on paths the overlay overrides",
+  "base-sparse-checkout": "core.sparseCheckout defeats every override; reported alone",
+  "base-operation-in-progress": "the base is mid-merge or mid-rebase",
+  "base-detached-head": "the base is on a detached HEAD, so upstream comparisons are off",
+  "base-unmerged-path": "an owned path has unresolved conflict stages in the base's index",
+  "overlay-detached": "`overgit detach` has the overlay unmounted",
+  "stale-detach-marker": "the detach marker survived, but the overlay is mounted",
+  "sync-in-progress": "a sync is unfinished; a state, not by itself a problem",
+  "interrupted-lock": "a lock file from a dead or running overgit process",
+} as const;
 
-export type ProblemId = (typeof PROBLEM_IDS)[number];
+export type ProblemId = keyof typeof PROBLEM_DESCRIPTIONS;
+
+export const PROBLEM_IDS = Object.keys(PROBLEM_DESCRIPTIONS) as ProblemId[];
 
 export interface Problem {
   /** Stable kebab id — tests and `--porcelain` output key off this. */
@@ -766,7 +720,7 @@ export async function diagnose(ctx: Context): Promise<Problem[]> {
     return problems;
   }
 
-  // ── state that does not depend on the manifest ────────────────────────────────────
+  // state that does not depend on the manifest
   for (const c of await checkOverlayConfig(ctx)) problems.push(c.problem);
 
   if (await pathExists(lockPath(ctx))) {
@@ -829,7 +783,7 @@ export async function diagnose(ctx: Context): Promise<Problem[]> {
     );
   }
 
-  // ── the manifest ──────────────────────────────────────────────────────────────────
+  // the manifest
   let manifest: Manifest;
   try {
     manifest = await readManifest(ctx);
@@ -862,7 +816,7 @@ export async function diagnose(ctx: Context): Promise<Problem[]> {
     );
   }
 
-  // ── detached: the overlay is deliberately unmounted ───────────────────────────────
+  // detached: the overlay is deliberately unmounted
   const mounted =
     paths.some((p) => manifest.entries[p]!.kind !== "add" && s.baseSkip.has(p)) ||
     (await currentExcludeBlock(ctx)) !== null;
@@ -896,7 +850,7 @@ export async function diagnose(ctx: Context): Promise<Problem[]> {
     );
   }
 
-  // ── base-wide checks ──────────────────────────────────────────────────────────────
+  // base-wide checks
   if (paths.some((p) => manifest.entries[p]!.kind !== "add")) {
     if ((await ctx.base.currentBranch()) === null && (await ctx.base.revParse("HEAD")) !== null) {
       problems.push(
@@ -929,7 +883,6 @@ export async function diagnose(ctx: Context): Promise<Problem[]> {
     problems.push(gitignoreProblem(hit));
   }
 
-  // ── per-path ──────────────────────────────────────────────────────────────────────
   const contentGate = s.baseOp !== null ? `the base repo is in the middle of ${s.baseOp}` : s.syncInProgress ? "a sync is in progress" : null;
   const gateHint = s.baseOp !== null
     ? `finish or abort ${s.baseOp} in ${ctx.root} first, then run \`overgit doctor --fix\``
@@ -1217,7 +1170,7 @@ export async function diagnose(ctx: Context): Promise<Problem[]> {
     // Otherwise: an ordinary uncommitted edit. Not a problem — that is the user working.
   }
 
-  // ── overlay files with no manifest entry ──────────────────────────────────────────
+  // overlay files with no manifest entry
   const overlayTracked = new Set<string>();
   for (const p of s.overlayIndex.keys()) if (!isOverlayInternal(p)) overlayTracked.add(p);
   for (const p of s.overlayHead.keys()) if (!isOverlayInternal(p)) overlayTracked.add(p);
@@ -1246,10 +1199,10 @@ export async function diagnose(ctx: Context): Promise<Problem[]> {
     );
   }
 
-  // ── the base's exclude block ──────────────────────────────────────────────────────
+  // the base's exclude block
   problems.push(...(await checkExcludeBlock(ctx, manifest)));
 
-  // ── pulls that git will refuse ────────────────────────────────────────────────────
+  // pulls that git will refuse
   problems.push(...(await checkPullBlocked(ctx, manifest, s)));
 
   return problems;
@@ -1455,7 +1408,7 @@ async function repairRound(ctx: Context, problems: Problem[]): Promise<RoundResu
   }
   const take = (id: ProblemId): Problem[] => byId.get(id) ?? [];
 
-  // ── 1. local bookkeeping, independent of everything else ──────────────────────────
+  // 1. local bookkeeping, independent of everything else
   for (const p of take("interrupted-lock")) {
     if (await fixInterruptedLock(ctx)) fixed.push(p);
   }
@@ -1464,7 +1417,7 @@ async function repairRound(ctx: Context, problems: Problem[]): Promise<RoundResu
     fixed.push(p);
   }
 
-  // ── 2. the overlay repo itself, before anything reads through it ──────────────────
+  // 2. the overlay repo itself, before anything reads through it
   if (byId.has("overlay-config-broken")) {
     for (const c of await checkOverlayConfig(ctx)) {
       if (c.key === "info/exclude") await ensureOverlayExcludes(ctx);
@@ -1478,7 +1431,7 @@ async function repairRound(ctx: Context, problems: Problem[]): Promise<RoundResu
     }
   }
 
-  // ── 3. the manifest ───────────────────────────────────────────────────────────────
+  // 3. the manifest
   for (const p of [...take("manifest-unreadable"), ...take("manifest-missing")]) {
     const r = await rebuildManifest(ctx);
     if (r.backup !== null) backups.push(r.backup);
@@ -1549,7 +1502,7 @@ async function repairRound(ctx: Context, problems: Problem[]): Promise<RoundResu
     fixed.push(p);
   }
 
-  // ── 4. derived state: exclude block, then index bits, then bytes ──────────────────
+  // 4. derived state: exclude block, then index bits, then bytes
   const wantExclude =
     byId.has("missing-exclude-line") ||
     byId.has("stale-exclude-line") ||
@@ -1586,7 +1539,7 @@ async function repairRound(ctx: Context, problems: Problem[]): Promise<RoundResu
     }
   }
 
-  // ── 5. the work-tree ──────────────────────────────────────────────────────────────
+  // 5. the work-tree
   if (!gated) {
     for (const p of take("whiteout-resurrected")) {
       if (p.path === undefined) continue;
