@@ -17,12 +17,14 @@
 import { join, relative as pathRelative, resolve as pathResolve, sep } from "node:path";
 import * as fs from "node:fs/promises";
 
-import type { Context } from "./context.ts";
+import type { BaseOperation, Context } from "./context.ts";
 import {
+  baseOperationInProgress,
   detachMarkerPath,
   lockPath,
   pidIsAlive,
   readLockPid,
+  resolveOverlayGitDir,
   syncStatePath,
 } from "./context.ts";
 import { isOvergitError } from "./errors.ts";
@@ -173,46 +175,20 @@ function quote(p: string): string {
   return /^[A-Za-z0-9._\-/]+$/.test(p) ? p : JSON.stringify(p);
 }
 
-/** Root-relative POSIX path of something inside the overlay's git dir, for display. */
+/**
+ * Root-relative POSIX path of something inside the overlay's git dir, for display.
+ *
+ * The *resolved* dir, so a gitfile overlay's `config` is named where it can be found. It can
+ * be anywhere, so a target outside the work-tree is printed absolute rather than as a pile
+ * of `../`.
+ */
 function overlayRel(ctx: Context, ...parts: string[]): string {
-  const rel = pathRelative(ctx.root, ctx.overlayGitDir).split(sep).join("/");
-  return parts.length > 0 ? `${rel}/${parts.join("/")}` : rel;
+  const rel = pathRelative(ctx.root, ctx.overlayGitDirReal).split(sep).join("/");
+  const base = rel.startsWith("../") ? ctx.overlayGitDirReal : rel;
+  return parts.length > 0 ? `${base}/${parts.join("/")}` : base;
 }
 
 /* ---------------------------------------------------------- `git clean` protection */
-
-/** A directory git would accept as a repository: it has a `HEAD`. */
-async function looksLikeGitDir(p: string): Promise<boolean> {
-  try {
-    if (!(await fs.stat(p)).isDirectory()) return false;
-  } catch {
-    return false;
-  }
-  return pathExists(join(p, "HEAD"));
-}
-
-/**
- * Resolve `<root>/.overgit/.git`, following a gitfile.
- *
- * Returns the real git dir, or `null` when the guard is absent, garbage, or a gitfile
- * whose target does not exist.
- */
-async function resolveOverlayGuard(ctx: Context): Promise<string | null> {
-  const guard = join(ctx.overgitDir, ".git");
-  let st: import("node:fs").Stats;
-  try {
-    st = await fs.lstat(guard);
-  } catch {
-    return null;
-  }
-  if (st.isDirectory()) return (await looksLikeGitDir(guard)) ? guard : null;
-  if (!st.isFile()) return null;
-  const text = await fs.readFile(guard, "utf8").catch(() => "");
-  const m = /^gitdir:\s*(.+?)\s*$/m.exec(text);
-  if (!m) return null;
-  const target = pathResolve(ctx.overgitDir, m[1]!);
-  return (await looksLikeGitDir(target)) ? target : null;
-}
 
 /**
  * Measured on git 2.55: `git clean -xfd` removes ignored *directories* wholesale, and
@@ -222,7 +198,9 @@ async function resolveOverlayGuard(ctx: Context): Promise<string | null> {
  * not recoverable afterwards.
  */
 async function checkCleanProtection(ctx: Context): Promise<Problem | null> {
-  if ((await resolveOverlayGuard(ctx)) !== null) return null;
+  // Asked live rather than taken from `ctx.hasOverlay`: this is the one drift whose
+  // consequence cannot be undone, and the answer may have changed since `discover` ran.
+  if ((await resolveOverlayGitDir(ctx.overlayGitDir)) !== null) return null;
 
   const guard = join(ctx.overgitDir, ".git");
   const st = await fs.lstat(guard).catch(() => null);
@@ -380,26 +358,6 @@ class DirCache {
   }
 }
 
-/* ------------------------------------------------------------------ environment probes */
-
-const BASE_OPERATION_MARKERS = [
-  ["MERGE_HEAD", "a merge"],
-  ["rebase-merge", "a rebase"],
-  ["rebase-apply", "a rebase or `git am`"],
-  ["CHERRY_PICK_HEAD", "a cherry-pick"],
-  ["REVERT_HEAD", "a revert"],
-  ["BISECT_LOG", "a bisect"],
-  ["sequencer", "a sequencer operation"],
-] as const;
-
-async function baseOperationInProgress(ctx: Context): Promise<string | null> {
-  for (const [marker, what] of BASE_OPERATION_MARKERS) {
-    if (await pathExists(join(ctx.baseWorktreeGitDir, marker))) return what;
-  }
-  return null;
-}
-
-
 /* ------------------------------------------------------------------ overlay config */
 
 interface ConfigProblem {
@@ -426,7 +384,9 @@ async function checkOverlayConfig(ctx: Context): Promise<ConfigProblem[]> {
   const cfgPath = overlayRel(ctx, "config");
 
   const worktree = await overlayConfigValue(ctx, "core.worktree");
-  const resolved = worktree === null ? null : pathResolve(ctx.overlayGitDir, worktree);
+  // git resolves a relative `core.worktree` against the real git dir, so a gitfile overlay
+  // gets the same answer git would give rather than one measured from the pointer.
+  const resolved = worktree === null ? null : pathResolve(ctx.overlayGitDirReal, worktree);
   if (worktree === null || resolved !== ctx.root) {
     out.push({
       key: "core.worktree",
@@ -485,7 +445,7 @@ async function checkOverlayConfig(ctx: Context): Promise<ConfigProblem[]> {
     });
   }
 
-  const excludePath = join(ctx.overlayGitDir, "info", "exclude");
+  const excludePath = join(ctx.overlayGitDirReal, "info", "exclude");
   const bytes = await fs.readFile(excludePath).catch(() => null);
   const block = bytes === null ? null : readManagedBlock(new Uint8Array(bytes));
   const wantLines = OVERLAY_EXCLUDE_LINES;
@@ -586,8 +546,8 @@ interface Survey {
   overlayHead: Map<string, IndexEntry>;
   overlayHasHead: boolean;
   dirs: DirCache;
-  /** Non-null when the base is mid-merge/rebase/…; the string names the operation. */
-  baseOp: string | null;
+  /** Non-null when the base is mid-merge/rebase/…. */
+  baseOp: BaseOperation | null;
   syncInProgress: boolean;
   detached: boolean;
 }
@@ -656,10 +616,7 @@ export async function diagnose(ctx: Context): Promise<Problem[]> {
   // whose consequence is unrecoverable.
   const protection = await checkCleanProtection(ctx);
 
-  // `Context.hasOverlay` insists on a real directory. A *gitfile* at `.overgit/.git` whose
-  // target exists is an equally valid overlay (measured on git 2.55), so ask again.
-  const hasOverlay = ctx.hasOverlay || (await resolveOverlayGuard(ctx)) !== null;
-  if (!hasOverlay) {
+  if (!ctx.hasOverlay) {
     if (protection !== null && (await pathExists(ctx.overgitDir))) problems.push(protection);
     problems.push(
       mk(
@@ -756,8 +713,8 @@ export async function diagnose(ctx: Context): Promise<Problem[]> {
       mk(
         "base-operation-in-progress",
         "warning",
-        `the base repo is in the middle of ${baseOp}`,
-        `finish it in ${ctx.root} (\`git merge --continue\`/\`--abort\`, \`git rebase --continue\`/\`--abort\`) and then re-run \`overgit doctor --fix\`; until then overgit will not touch the base's index or the work-tree`,
+        `the base repo is in the middle of ${baseOp.what}`,
+        `in ${ctx.root}, ${baseOp.remedy}; then re-run \`overgit doctor --fix\` — until then overgit will not touch the base's index or the work-tree`,
       ),
     );
   }
@@ -883,10 +840,16 @@ export async function diagnose(ctx: Context): Promise<Problem[]> {
     problems.push(gitignoreProblem(hit));
   }
 
-  const contentGate = s.baseOp !== null ? `the base repo is in the middle of ${s.baseOp}` : s.syncInProgress ? "a sync is in progress" : null;
-  const gateHint = s.baseOp !== null
-    ? `finish or abort ${s.baseOp} in ${ctx.root} first, then run \`overgit doctor --fix\``
-    : "run `overgit sync --continue` or `overgit sync --abort` first, then run `overgit doctor --fix`";
+  const contentGate =
+    s.baseOp !== null
+      ? `the base repo is in the middle of ${s.baseOp.what}`
+      : s.syncInProgress
+        ? "a sync is in progress"
+        : null;
+  const gateHint =
+    s.baseOp !== null
+      ? `in ${ctx.root}, ${s.baseOp.remedy} first, then run \`overgit doctor --fix\``
+      : "run `overgit sync --continue` or `overgit sync --abort` first, then run `overgit doctor --fix`";
 
   const staleBaseBlobs = await missingBaseBlobs(
     ctx,

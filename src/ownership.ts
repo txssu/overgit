@@ -11,7 +11,7 @@
 
 import { OvergitError, ioError, pathError } from "./errors.ts";
 import type { Context } from "./context.ts";
-import { BACKUP_REL } from "./context.ts";
+import { BACKUP_REL, overlayLooksReal } from "./context.ts";
 import type { IndexEntry } from "./git.ts";
 import { GitError, SUPPORTED_MODES, contentIsOid, indexMap, literalPathspec } from "./git.ts";
 import type { WorktreeState } from "./files.ts";
@@ -409,7 +409,7 @@ async function overlayDirtyFor(ctx: Context, s: Snapshot, p: string): Promise<bo
  * overlay can be removed in between (a `git clean -xffd` in the base still reaches it).
  */
 async function assertOverlayPresent(ctx: Context): Promise<void> {
-  if (await Bun.file(join(ctx.overlayGitDir, "HEAD")).exists()) return;
+  if (await overlayLooksReal(ctx.overlayGitDir)) return;
   throw new OvergitError("NO_OVERLAY", `there is no overlay repository at ${ctx.overlayGitDir}`, {
     hint: "run `overgit init` to create one, or `overgit clone <url>` to fetch an existing one",
     paths: [ctx.overlayGitDir],

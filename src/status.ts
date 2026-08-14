@@ -7,8 +7,8 @@
  * the base's own work, listed next to the overlay's.
  */
 
-import type { Context } from "./context.ts";
-import { detachMarkerPath, syncStatePath } from "./context.ts";
+import type { Context, DetachMarker } from "./context.ts";
+import { detachMarkerPath, readDetachMarker, syncStatePath } from "./context.ts";
 import { pathExists } from "./files.ts";
 import type { StatusEntry } from "./git.ts";
 import { blobOidLike } from "./git.ts";
@@ -75,6 +75,15 @@ export interface MergedStatus {
 
   /** True when `.overgit/local/detached` exists, i.e. the overlay is unmounted. */
   detached: boolean;
+  /**
+   * What that marker records: when the detach happened, the overlay commit it happened at,
+   * and whether it ran to completion. `null` only when there is no marker to read.
+   *
+   * `detached` stays the answer to "is the overlay unmounted?", because the file's
+   * *existence* is what makes it so — a marker overgit cannot read must never report as
+   * mounted.
+   */
+  detach: DetachMarker | null;
   /**
    * Overridden paths whose upstream moved. A base `git pull` or `git checkout` that touches
    * one of these **aborts** ("Your local changes … would be overwritten by merge", measured
@@ -322,6 +331,7 @@ export async function computeStatus(ctx: Context): Promise<MergedStatus> {
     problems = Math.max(problems, 1);
   }
   const detached = await pathExists(detachMarkerPath(ctx));
+  const detach = detached ? await readDetachMarker(ctx) : null;
 
   return {
     base: { branch: baseBranch, head: baseHead, entries: filterBaseEntries(baseEntries, owned) },
@@ -342,6 +352,7 @@ export async function computeStatus(ctx: Context): Promise<MergedStatus> {
     syncInProgress,
     problems,
     detached,
+    detach,
     pullBlocked: files
       .filter((f) => f.kind === "override" && (f.upstream === "changed" || f.upstream === "deleted"))
       .map((f) => f.path),

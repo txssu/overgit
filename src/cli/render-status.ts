@@ -29,6 +29,17 @@ const KIND_MARK: Record<OverlayFileStatus["kind"], string> = {
 
 const abbrev = (oid: string | null): string => shortOid(oid, "?");
 
+/** What the detach marker records, for the human-readable form. */
+function detachPhrase(m: NonNullable<MergedStatus["detach"]>): string {
+  const at = m.overlayHead === null ? "" : ` at overlay ${abbrev(m.overlayHead)}`;
+  const head = `detached ${m.detachedAt}${at}, ${plural(m.paths.length, "path")}`;
+  // The two lists are only filled in by the final write, so on an interrupted detach they
+  // are empty and mean nothing.
+  return m.complete
+    ? `${head} (${m.restored.length} restored from the base, ${m.removed.length} removed)`
+    : head;
+}
+
 function branchPhrase(branch: string | null, head: string | null): string {
   if (head === null) return "no commits yet";
   if (branch === null) return `HEAD detached at ${abbrev(head)}`;
@@ -91,10 +102,19 @@ export function renderStatusLong(s: MergedStatus, ui: Ui): string[] {
   );
 
   if (s.detached) {
+    const m = s.detach;
     out.push("");
     out.push(ui.s("the overlay is DETACHED", "yellow", "bold"));
-    out.push("  the work-tree holds pristine base content; no overlay file is applied");
-    out.push("  run `overgit attach` to mount the overlay again");
+    if (m !== null && m.detachedAt !== "") out.push(`  ${detachPhrase(m)}`);
+    if (m !== null && !m.complete) {
+      // Written before the first mutation, so this is the one reading that matters: the
+      // work-tree is somewhere between the overlay's content and the base's.
+      out.push("  that detach was interrupted, so the work-tree is only half unmounted");
+      out.push("  run `overgit attach` to rebuild it from the overlay");
+    } else {
+      out.push("  the work-tree holds pristine base content; no overlay file is applied");
+      out.push("  run `overgit attach` to mount the overlay again");
+    }
   }
 
   if (s.syncInProgress) {
@@ -242,6 +262,7 @@ function colourKind(ui: Ui, kind: OverlayFileStatus["kind"]): string {
 export function renderStatusShort(s: MergedStatus): string[] {
   const out: string[] = [];
   if (s.detached) out.push("# detached");
+  if (s.detach !== null && !s.detach.complete) out.push("# detach-interrupted");
   if (s.syncInProgress) out.push("# sync-in-progress");
 
   for (const f of s.files) {
@@ -302,6 +323,15 @@ export function renderStatusPorcelain(s: MergedStatus): string {
   push("overlay.ahead", s.overlay.ahead);
   push("overlay.behind", s.overlay.behind);
   push("detached", s.detached ? 1 : 0);
+  if (s.detach !== null) {
+    push(
+      "detach",
+      s.detach.detachedAt,
+      s.detach.overlayHead ?? "",
+      s.detach.paths.length,
+      s.detach.complete ? 1 : 0,
+    );
+  }
   push("sync-in-progress", s.syncInProgress ? 1 : 0);
   push("problems", s.problems);
 

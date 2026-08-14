@@ -266,7 +266,9 @@ function baseExcludePath(ctx: Context): string {
 }
 
 function overlayExcludePath(ctx: Context): string {
-  return `${ctx.overlayGitDir}/info/exclude`;
+  // The resolved dir, not `.overgit/.git`: when that is a gitfile there is no `info/`
+  // beneath it, and opening the path gives ENOTDIR.
+  return `${ctx.overlayGitDirReal}/info/exclude`;
 }
 
 /**

@@ -273,6 +273,43 @@ describe("majors from the same critic round", () => {
     expect(d.stdout + d.stderr).toContain("clean-unprotected");
   });
 
+  test("a gitfile overlay is a whole overlay, not just one `status` can read (C6)", async () => {
+    const upstream = await sb.mkUpstream("upstream", { "app.toml": "port = 8080\n" });
+    const base = await upstream.clone("base");
+    expectOk(await overgit(base.dir, "init"));
+    await base.write("app.toml", "port = 3000\n");
+    await base.write(".env", "secret\n");
+    expectOk(await overgit(base.dir, "add", "app.toml", ".env"));
+    expectOk(await overgit(base.dir, "commit", "-m", "overlay"));
+
+    const { rename, writeFile } = await import("node:fs/promises");
+    await rename(join(base.dir, ".overgit/.git"), join(base.dir, ".overgit/realgit"));
+    await writeFile(join(base.dir, ".overgit/.git"), "gitdir: realgit\n");
+
+    // Only `discover` followed the pointer. Everything else opened `.overgit/.git/HEAD` or
+    // `.overgit/.git/info/exclude` as if it were a directory, so `apply`, `add`, `attach`
+    // answered "there is no overlay repository" and `doctor` invented a broken-config
+    // problem it then could not fix (ENOTDIR).
+    expectOk(await overgit(base.dir, "status"));
+    expectOk(await overgit(base.dir, "apply"));
+    await base.write("extra.txt", "mine\n");
+    expectOk(await overgit(base.dir, "add", "extra.txt"));
+    expectOk(await overgit(base.dir, "commit", "-m", "one more"));
+    expectOk(await overgit(base.dir, "doctor"));
+
+    // The combination that stranded the user: `detach` worked, `attach` did not, so the
+    // work-tree stayed pristine base content with no supported way back.
+    expectOk(await overgit(base.dir, "detach"));
+    expect(await base.read("app.toml")).toBe("port = 8080\n");
+    expect(await base.exists(".env")).toBe(false);
+
+    expectOk(await overgit(base.dir, "attach"));
+    expect(await base.read("app.toml")).toBe("port = 3000\n");
+    expect(await base.read(".env")).toBe("secret\n");
+    expect(await base.read("extra.txt")).toBe("mine\n");
+    await assertBaseBlind(base, "gitfile overlay");
+  });
+
   test("hooks install refuses a non-POSIX-shell hook instead of breaking it (C5)", async () => {
     const upstream = await sb.mkUpstream("upstream", { "f.txt": "base\n" });
     const base = await upstream.clone("base");

@@ -4,6 +4,10 @@
  * All three take the advisory lock, because all three write the manifest, the overlay
  * index, the base's exclude block and the base's index bits — a half-finished one of those
  * is exactly the drift `doctor` exists to clean up, so it is worth not creating.
+ *
+ * And all three refuse while the base is mid-merge (or rebase, cherry-pick, …): the base's
+ * index then holds several versions of a path, so the manifest they would write is a guess.
+ * See `assertBaseIdle`.
  */
 
 import { withLock } from "../../context.ts";
@@ -12,7 +16,7 @@ import { restoreToBase, takeOwnership, whiteout } from "../../ownership.ts";
 import { OvergitError } from "../../errors.ts";
 import { boolFlag, requireArgs, usageError } from "../args.ts";
 import type { CommandSpec, Env } from "../command.ts";
-import { openContext, reportOwnership } from "../common.ts";
+import { assertBaseIdle, openContext, reportOwnership } from "../common.ts";
 
 export const addCommand: CommandSpec = {
   name: "add",
@@ -48,6 +52,7 @@ export const addCommand: CommandSpec = {
     const paths = requireArgs(env.args, "add", "at least one path");
     const force = boolFlag(env.args, "force");
     const ctx = await openContext(env, { requireOverlay: true });
+    await assertBaseIdle(ctx, "add");
     const result = await withLock(ctx, () => takeOwnership(ctx, paths, { force }));
     reportOwnership(env.ui, result, "took");
     if (result.changes.length > 0) {
@@ -85,6 +90,7 @@ export const rmCommand: CommandSpec = {
     const paths = requireArgs(env.args, "rm", "at least one path");
     const force = boolFlag(env.args, "force");
     const ctx = await openContext(env, { requireOverlay: true });
+    await assertBaseIdle(ctx, "rm");
     const result = await withLock(ctx, () => whiteout(ctx, paths, { force }));
     reportOwnership(env.ui, result, "removed");
     return 0;
@@ -138,6 +144,7 @@ export const restoreCommand: CommandSpec = {
     }
 
     const ctx = await openContext(env, { requireOverlay: true });
+    await assertBaseIdle(ctx, "restore");
     const result = await withLock(ctx, async () => {
       if (!all) return restoreToBase(ctx, env.args.positional, { force, keepFile });
       const manifest = await readManifest(ctx);

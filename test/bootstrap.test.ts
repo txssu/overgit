@@ -14,7 +14,7 @@
  */
 
 import { afterAll, describe, expect, test } from "bun:test";
-import { readFile, rm, stat } from "node:fs/promises";
+import { readFile, rename, rm, stat, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 
 import {
@@ -280,6 +280,45 @@ describe("overgit clone (inside an existing base checkout)", () => {
 
         expect(compareTrees(before, await f.base.snapshot()).text).toBe("");
         await f.base.assertClean();
+      } finally {
+        await f.sb.cleanup();
+      }
+    },
+    45_000,
+  );
+
+  test(
+    "sees an overlay whose `.git` is a gitfile, and refuses to clone over it",
+    async () => {
+      const f = await mkFixture("clone-gitfile-overlay");
+      try {
+        const other = await f.sb.mkBareRepo("other-overlay");
+
+        // A *gitfile* at `.overgit/.git` pointing at a real repository beside it. `git clean
+        // -xfd` still spares the directory and `git -C .overgit log` still works, so
+        // `discover` calls it a healthy overlay — and `test/critic-regressions.test.ts` pins
+        // that. `clone` had a second copy of the predicate that tested `.overgit/.git/HEAD`
+        // and therefore said "no overlay here": it deleted the live gitfile, reported it as
+        // leftovers from an interrupted run, and pointed `origin` at the other repository,
+        // orphaning everything the user had.
+        await rename(f.base.path(".overgit/.git"), f.base.path(".overgit/realgit"));
+        await writeFile(f.base.path(".overgit/.git"), "gitdir: realgit\n");
+        const before = await f.base.snapshot();
+
+        const r = expectExit(await og(f.base.dir, "clone", other.dir), 1);
+        expect(r.stderr).toContain(f.overlayRemote.dir); // what is actually there
+        expect(r.stderr).toContain(other.dir); // what was asked for
+        expect(r.stderr).not.toContain("interrupted run");
+
+        expect(compareTrees(before, await f.base.snapshot()).text).toBe("");
+        expect(await f.base.read(".overgit/.git")).toBe("gitdir: realgit\n");
+
+        // And the same URL is still the documented clean no-op rather than a re-clone.
+        const again = expectOk(await og(f.base.dir, "clone", f.overlayRemote.dir));
+        expect(again.stdout).toContain("already present");
+        expect(again.stderr).not.toContain("interrupted run");
+        expect(await f.base.read(".overgit/.git")).toBe("gitdir: realgit\n");
+        expect(compareTrees(before, await f.base.snapshot()).text).toBe("");
       } finally {
         await f.sb.cleanup();
       }
@@ -628,6 +667,76 @@ describe("overgit detach / attach", () => {
         expect(await f.base.exists("D.txt")).toBe(false);
         expect(await f.base.read("A.txt")).toBe(OVERLAY_A);
         await f.base.assertClean({ label: "after detach/pull/attach" });
+      } finally {
+        await f.sb.cleanup();
+      }
+    },
+    60_000,
+  );
+
+  test(
+    "status reports what the marker records, not merely that there is one",
+    async () => {
+      const f = await mkFixture("detach-status-detail");
+      try {
+        const overlayHead = (
+          await f.base.gitRun(["--git-dir", f.base.path(".overgit/.git"), "rev-parse", "HEAD"])
+        ).stdout.trim();
+        expectOk(await og(f.base.dir, "detach"));
+
+        // The fields were written and never read back by anything: `status` and `doctor`
+        // tested the file's existence and stopped there.
+        const marker = JSON.parse(await f.base.read(".overgit/local/detached")) as {
+          detachedAt: string;
+          restored: string[];
+          removed: string[];
+        };
+        expect(marker.restored.slice().sort()).toEqual(["C.txt", "D.txt"]);
+        expect(marker.removed).toEqual(["A.txt"]);
+
+        const long = expectOk(await og(f.base.dir, "status")).stdout;
+        expect(long).toContain("DETACHED");
+        expect(long).toContain(overlayHead.slice(0, 8));
+        expect(long).toContain("3 paths");
+        expect(long).toContain("2 restored from the base, 1 removed");
+
+        const fields = expectOk(await og(f.base.dir, "status", "--porcelain"))
+          .stdout.split("\0")
+          .find((r) => r.startsWith("detach\t"))!
+          .split("\t");
+        expect(fields).toEqual(["detach", marker.detachedAt, overlayHead, "3", "1"]);
+      } finally {
+        await f.sb.cleanup();
+      }
+    },
+    60_000,
+  );
+
+  test(
+    "an interrupted detach is reported as one, not as pristine base content",
+    async () => {
+      const f = await mkFixture("detach-interrupted");
+      try {
+        expectOk(await og(f.base.dir, "detach"));
+
+        // What a `kill -9` between the claim and the finalise leaves behind. The marker is
+        // written before the first mutation precisely so this state is recognisable; until
+        // `complete` was read back, `status` described it as a finished detach.
+        const path = f.base.path(".overgit/local/detached");
+        const m = JSON.parse(await readFile(path, "utf8")) as Record<string, unknown>;
+        await writeFile(
+          path,
+          JSON.stringify({ ...m, complete: false, restored: [], removed: [] }, null, 2) + "\n",
+        );
+
+        const long = expectOk(await og(f.base.dir, "status")).stdout;
+        expect(long).toContain("interrupted");
+        expect(long).toContain("overgit attach");
+        expect(long).not.toContain("holds pristine base content");
+
+        const short = expectOk(await og(f.base.dir, "status", "--short")).stdout;
+        expect(short).toContain("# detached");
+        expect(short).toContain("# detach-interrupted");
       } finally {
         await f.sb.cleanup();
       }

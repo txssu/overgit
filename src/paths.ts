@@ -235,44 +235,10 @@ const GITIGNORE_SPECIAL = new Set(["\\", "*", "?", "[", "]", "#", "!", " "]);
  * which makes every matching file ignored — and a base-side `git clean -xfd` deletes
  * ignored files. An over-broad pattern therefore lets overgit cause the deletion of a file
  * it was never pointed at. Callers that are about to write an exclude line must refuse
- * first: see `assertExcludable`.
+ * first: `assertExcludable` in `ownership.ts` is the one that does, on the `add` path.
  */
 export function gitignorePatternIsApproximate(repoPath: string): boolean {
   return repoPath.includes("\n") || repoPath.endsWith("\r");
-}
-
-/** A concrete sibling that the approximate pattern would also match, for the error text. */
-function exampleCollision(repoPath: string): string {
-  let out = "";
-  for (let i = 0; i < repoPath.length; i++) {
-    const ch = repoPath[i]!;
-    out += ch === "\n" || (ch === "\r" && i === repoPath.length - 1) ? "X" : ch;
-  }
-  return out;
-}
-
-/**
- * Throws `UNSUPPORTED` when a path cannot be given an exact `.git/info/exclude` pattern.
- *
- * Only `add` needs an exclude line, so only `add` needs this gate — `override` and
- * `delete` work through skip-worktree, which has no escaping problem at all and happily
- * handles these names.
- */
-export function assertExcludable(repoPath: string): void {
-  if (!gitignorePatternIsApproximate(repoPath)) return;
-  const what = repoPath.includes("\n") ? "a newline" : "a trailing carriage return";
-  throw new OvergitError(
-    "UNSUPPORTED",
-    `${JSON.stringify(repoPath)}: cannot be hidden from the base repository, because its name contains ${what}`,
-    {
-      paths: [repoPath],
-      details: [
-        `a gitignore line cannot contain that byte, so the pattern would have to be ${JSON.stringify(gitignoreEscape(repoPath))},`,
-        `which would also hide ${JSON.stringify(exampleCollision(repoPath))} — and a later \`git clean -xfd\` would delete it.`,
-      ],
-      hint: "rename the file, or track it in the base repository instead",
-    },
-  );
 }
 
 /** Escape a repo-relative path into an anchored gitignore pattern (leading `/`). */

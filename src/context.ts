@@ -13,9 +13,10 @@
  */
 
 import { openSync, closeSync, writeSync, unlinkSync, readFileSync } from "node:fs";
-import { mkdir, stat, realpath } from "node:fs/promises";
+import { mkdir, readFile, stat, realpath } from "node:fs/promises";
 import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import { Git, GitError } from "./git.ts";
+import { pathExists } from "./files.ts";
 import { isPathInside } from "./paths.ts";
 import { OvergitError } from "./errors.ts";
 
@@ -43,6 +44,16 @@ export interface Context {
    * That is what keeps `git clean -xfd` from deleting the manifest and the backups.
    */
   overlayGitDir: string;
+  /**
+   * Where that git dir *actually* is. The same path, except when `.overgit/.git` is a
+   * gitfile, in which case it is the directory the pointer names.
+   *
+   * Anything that opens a file inside the git dir (`info/exclude`, `config`) must use this
+   * one — git resolves the pointer itself, `node:fs` does not. `overlayGitDir` stays the
+   * path to hand to `git --git-dir`, to name in a message, and to create or remove.
+   * Equal to `overlayGitDir` when there is no overlay at all.
+   */
+  overlayGitDirReal: string;
   localDir: string;
   manifestPath: string;
   base: Git;
@@ -66,24 +77,43 @@ async function isFile(p: string): Promise<boolean> {
   }
 }
 
-/** A directory only counts as an overlay once it has a HEAD — a half-made clone does not. */
-async function overlayLooksReal(overlayGitDir: string): Promise<boolean> {
-  if ((await isDir(overlayGitDir)) && (await isFile(join(overlayGitDir, "HEAD")))) return true;
-
-  // A *gitfile* at `.overgit/.git` is an equally valid overlay: measured on git 2.55,
-  // `git clean -xfd` spares the directory and `git -C .overgit log` works, so it is healthy
-  // by the only test that matters. Insisting on a real directory made every overgit command
-  // report "no overlay" on a perfectly good setup, and made `doctor` unable to distinguish
-  // it from the *dangling* gitfile — which is the shape that silently loses everything.
-  if (!(await isFile(overlayGitDir))) return false;
+/**
+ * Where `.overgit/.git` really is, or `null` when there is no overlay there.
+ *
+ * A directory only counts once it has a HEAD — a half-made clone does not. A *gitfile* at
+ * `.overgit/.git` counts too: measured on git 2.55, `git clean -xfd` spares the directory
+ * and `git -C .overgit log` works, so it is healthy by the only test that matters. Insisting
+ * on a real directory made every overgit command report "no overlay" on a perfectly good
+ * setup, and made `doctor` unable to distinguish it from the *dangling* gitfile — which is
+ * the shape that silently loses everything.
+ *
+ * The resolved path is what callers need to open a file *inside* the git dir: git follows
+ * the pointer on its own, `node:fs` does not.
+ */
+export async function resolveOverlayGitDir(overlayGitDir: string): Promise<string | null> {
+  if ((await isDir(overlayGitDir)) && (await isFile(join(overlayGitDir, "HEAD")))) {
+    return overlayGitDir;
+  }
+  if (!(await isFile(overlayGitDir))) return null;
   const text = await Bun.file(overlayGitDir)
     .text()
     .catch(() => "");
   const m = /^gitdir:\s*(.+?)\s*$/m.exec(text);
-  if (m === null) return false;
+  if (m === null) return null;
   const target = m[1]!;
   const abs = isAbsolute(target) ? target : resolve(dirname(overlayGitDir), target);
-  return (await isDir(abs)) && (await isFile(join(abs, "HEAD")));
+  return (await isDir(abs)) && (await isFile(join(abs, "HEAD"))) ? abs : null;
+}
+
+/**
+ * Is there an overlay at `overlayGitDir`?
+ *
+ * One predicate, because three copies of it had grown: `cloneOverlay` deleted a live gitfile
+ * overlay and `add`/`apply`/`attach` reported "no overlay repository" on one, both because
+ * their own copy tested `.overgit/.git/HEAD` and a gitfile has no such path.
+ */
+export async function overlayLooksReal(overlayGitDir: string): Promise<boolean> {
+  return (await resolveOverlayGitDir(overlayGitDir)) !== null;
 }
 
 /** The overlay's git dir is, by construction, `<something>/.overgit/.git`. */
@@ -216,7 +246,8 @@ export async function discover(
     );
   }
 
-  const hasOverlay = await overlayLooksReal(overlayGitDir);
+  const overlayReal = await resolveOverlayGitDir(overlayGitDir);
+  const hasOverlay = overlayReal !== null;
   if (opts?.requireOverlay && !hasOverlay) {
     throw new OvergitError("NO_OVERLAY", `no overlay in ${root}`, {
       hint: "run `overgit init` to create one, or `overgit clone <url>` to fetch one",
@@ -240,6 +271,7 @@ export async function discover(
     baseWorktreeGitDir,
     overgitDir,
     overlayGitDir,
+    overlayGitDirReal: overlayReal ?? overlayGitDir,
     localDir,
     manifestPath,
     base,
@@ -273,6 +305,119 @@ export function detachMarkerPath(ctx: Context): string {
 
 /** Root-relative directory holding rescued work-tree bytes. Reported to the user as-is. */
 export const BACKUP_REL = ".overgit/local/backups";
+
+/**
+ * What `overgit detach` records when it unmounts the overlay.
+ *
+ * The file's *existence* is what makes the work-tree detached; these fields are the
+ * description of that state, and `overgit status` reports them. Nothing reads them to decide
+ * anything, so a marker written by an older overgit — or a corrupt one — still detaches.
+ */
+export interface DetachMarker {
+  version: 1;
+  detachedAt: string;
+  /** Overlay `HEAD` at the moment of detaching. */
+  overlayHead: string | null;
+  /** Paths the overlay owned when it was unmounted. */
+  paths: string[];
+  restored: string[];
+  removed: string[];
+  /**
+   * False while a detach is still running. The marker is written *before* any mutation so an
+   * interrupted detach is recognised as detached — otherwise the next `detach` would stage
+   * the base bytes it had already restored over the overlay's own content.
+   */
+  complete: boolean;
+}
+
+/** `null` only when there is no marker at all: an unreadable one still means detached. */
+export async function readDetachMarker(ctx: Context): Promise<DetachMarker | null> {
+  let text: string;
+  try {
+    text = await readFile(detachMarkerPath(ctx), "utf8");
+  } catch {
+    return null;
+  }
+  const blank: DetachMarker = {
+    version: 1,
+    detachedAt: "",
+    overlayHead: null,
+    paths: [],
+    restored: [],
+    removed: [],
+    // Only an explicit `false` claims the detach was interrupted. A marker too damaged to
+    // parse says nothing about that, and `attach` rebuilds from the overlay either way.
+    complete: true,
+  };
+  try {
+    const raw = JSON.parse(text) as Partial<DetachMarker>;
+    const strings = (v: unknown): string[] =>
+      Array.isArray(v) ? v.filter((p): p is string => typeof p === "string") : [];
+    return {
+      ...blank,
+      detachedAt: typeof raw.detachedAt === "string" ? raw.detachedAt : "",
+      overlayHead: typeof raw.overlayHead === "string" ? raw.overlayHead : null,
+      paths: strings(raw.paths),
+      restored: strings(raw.restored),
+      removed: strings(raw.removed),
+      complete: raw.complete !== false,
+    };
+  } catch {
+    return blank;
+  }
+}
+
+/* ------------------------------------------- is the base mid-operation? */
+
+export interface BaseOperation {
+  /** Prose naming it, e.g. `a merge`. */
+  what: string;
+  /** How to get out of it, phrased to drop into a hint. */
+  remedy: string;
+}
+
+/**
+ * Marker file in the base's per-worktree git dir → what it means, and how to end it.
+ *
+ * Order matters: `sequencer/` lives for the whole of a multi-commit cherry-pick or revert,
+ * including while one of them is stopped at a conflict, so the specific markers above it
+ * match first and give the specific advice.
+ */
+const BASE_OPERATIONS: ReadonlyArray<readonly [string, BaseOperation]> = [
+  ["MERGE_HEAD", { what: "a merge", remedy: undo("merge") }],
+  ["rebase-merge", { what: "a rebase", remedy: undo("rebase") }],
+  ["rebase-apply", { what: "a rebase or `git am`", remedy: undo("rebase") }],
+  ["CHERRY_PICK_HEAD", { what: "a cherry-pick", remedy: undo("cherry-pick") }],
+  ["REVERT_HEAD", { what: "a revert", remedy: undo("revert") }],
+  [
+    "BISECT_LOG",
+    { what: "a bisect", remedy: "carry on (`git bisect good`/`bad`) or end it (`git bisect reset`)" },
+  ],
+  // Reached only when the sequence is between commits rather than stopped at a conflict —
+  // otherwise one of the markers above matches first. `--continue` belongs to whichever
+  // command started it; `git cherry-pick --abort` ends a revert sequence too (git 2.55).
+  [
+    "sequencer",
+    {
+      what: "a cherry-pick or revert sequence",
+      remedy:
+        "finish it (`git cherry-pick --continue`, or `git revert --continue` if it is a revert)" +
+        " or abandon it (`git cherry-pick --abort`)",
+    },
+  ],
+];
+
+function undo(cmd: string): string {
+  return `finish it (\`git ${cmd} --continue\`) or abandon it (\`git ${cmd} --abort\`)`;
+}
+
+/** `null` when the base is idle. One list, because two of them had already drifted apart. */
+export async function baseOperationInProgress(ctx: Context): Promise<BaseOperation | null> {
+  for (const [marker, op] of BASE_OPERATIONS) {
+    if (await pathExists(join(ctx.baseWorktreeGitDir, marker))) return op;
+  }
+  return null;
+}
 
 /* ----------------------------------------------------- advisory lock */
 

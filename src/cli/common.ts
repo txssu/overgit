@@ -3,10 +3,7 @@
  * engines' report objects into something a person can read.
  */
 
-import { join } from "node:path";
-
-import { discover, type Context } from "../context.ts";
-import { pathExists } from "../files.ts";
+import { baseOperationInProgress, discover, type Context } from "../context.ts";
 import { OvergitError } from "../errors.ts";
 import { toRepoPath } from "../paths.ts";
 import type { ApplyReport, OwnershipResult } from "../ownership.ts";
@@ -18,28 +15,6 @@ export function openContext(env: Env, opts?: { requireOverlay?: boolean }): Prom
   return discover(env.cwd, opts);
 }
 
-/* --------------------------------------------------- is the base mid-operation? */
-
-/** Marker file in the base's per-worktree git dir → what it means, and how to end it. */
-const BASE_OPERATIONS: [string, string, string, string][] = [
-  ["MERGE_HEAD", "a merge", "git merge --continue", "git merge --abort"],
-  ["rebase-merge", "a rebase", "git rebase --continue", "git rebase --abort"],
-  ["rebase-apply", "a rebase or `git am`", "git rebase --continue", "git rebase --abort"],
-  ["CHERRY_PICK_HEAD", "a cherry-pick", "git cherry-pick --continue", "git cherry-pick --abort"],
-  ["REVERT_HEAD", "a revert", "git revert --continue", "git revert --abort"],
-  ["BISECT_LOG", "a bisect", "git bisect good/bad", "git bisect reset"],
-];
-
-/** `null` when the base is idle, otherwise `[what, finish, abort]`. */
-export async function baseOperationInProgress(
-  ctx: Context,
-): Promise<[string, string, string] | null> {
-  for (const [marker, what, finish, abort] of BASE_OPERATIONS) {
-    if (await pathExists(join(ctx.baseWorktreeGitDir, marker))) return [what, finish, abort];
-  }
-  return null;
-}
-
 /**
  * Refuse to change what the overlay owns while the base is mid-merge/rebase.
  *
@@ -47,16 +22,18 @@ export async function baseOperationInProgress(
  * --skip-worktree` fails on them, `HEAD:<path>` is not the blob the user is looking at, and
  * "the base's version" is not yet a single thing. Recording ownership against that state
  * would produce a manifest that is quietly wrong.
+ *
+ * `doctor` reports the same state instead of refusing, because being able to diagnose a
+ * work-tree mid-merge is the point of it.
  */
 export async function assertBaseIdle(ctx: Context, command: string): Promise<void> {
   const op = await baseOperationInProgress(ctx);
   if (op === null) return;
-  const [what, finish, abort] = op;
   throw new OvergitError(
     "DIRTY_WORKTREE",
-    `the base repository is in the middle of ${what}, so \`overgit ${command}\` cannot record what it owns`,
+    `the base repository is in the middle of ${op.what}, so \`overgit ${command}\` cannot record what it owns`,
     {
-      hint: `finish it (\`${finish}\`) or abandon it (\`${abort}\`), then re-run \`overgit ${command}\``,
+      hint: `${op.remedy}, then re-run \`overgit ${command}\``,
       details: [
         "during a conflicted merge the base's index holds several versions of a path,",
         "so there is no single “the base's version” to fork from",

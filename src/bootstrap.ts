@@ -19,7 +19,15 @@ import { dirname, join, resolve } from "node:path";
 
 import { OvergitError } from "./errors.ts";
 import { Git } from "./git.ts";
-import { detachMarkerPath, discover, pidIsAlive, withLock, type Context } from "./context.ts";
+import {
+  detachMarkerPath,
+  discover,
+  overlayLooksReal,
+  pidIsAlive,
+  withLock,
+  type Context,
+  type DetachMarker,
+} from "./context.ts";
 import { entryKind, pathExists, pruneEmptyParents, writeFileAtomic } from "./files.ts";
 import {
   MANIFEST_REPO_PATH,
@@ -184,11 +192,6 @@ function assertBranchName(git: Git, name: string): Promise<void> {
 }
 
 /* ------------------------------------------------------------------ overlay plumbing */
-
-/** True when `.overgit/.git` is a repository with a `HEAD` file (a finished clone/init). */
-async function overlayLooksReal(ctx: Context): Promise<boolean> {
-  return pathExists(join(ctx.overlayGitDir, "HEAD"));
-}
 
 /**
  * Make the overlay's own config correct. Idempotent, and safe to call on an overlay that a
@@ -430,7 +433,7 @@ export async function cloneOverlay(opts: CloneOptions): Promise<CloneResult> {
   const probe = await discover(targetDir);
   const recovered = await cleanStaleCloneTemps(probe);
 
-  if (await overlayLooksReal(probe)) {
+  if (probe.hasOverlay) {
     const origin = await readOrigin(probe);
     if (!sameRemote(origin, overlayUrl)) {
       throw new OvergitError(
@@ -484,7 +487,22 @@ export async function cloneOverlay(opts: CloneOptions): Promise<CloneResult> {
       // clone keeps the window in which `.overgit/.git` is absent — and therefore
       // `.overgit/` is not protected from `git clean -xfd` — down to the
       // gap between these two syscalls.
+      //
+      // Asked again under the lock, and with the same predicate `discover` uses, because the
+      // guard at the top of this function ran before the lock: an `overgit init` that won
+      // the race would otherwise have its overlay deleted and reported as leftovers from an
+      // interrupted run.
       if (await pathExists(probe.overlayGitDir)) {
+        if (await overlayLooksReal(probe.overlayGitDir)) {
+          throw new OvergitError(
+            "OVERLAY_EXISTS",
+            `${probe.overlayGitDir} gained an overlay while this clone was running`,
+            {
+              hint: "run `overgit status` to see what is there, or `overgit apply` to use it",
+              paths: [probe.overlayGitDir],
+            },
+          );
+        }
         await fs.rm(probe.overlayGitDir, { recursive: true, force: true });
         recovered.push(".git");
       }
@@ -599,23 +617,6 @@ async function sameDirectory(a: string, b: string): Promise<boolean> {
 
 /* ------------------------------------------------------------------ detach / attach */
 
-export interface DetachMarker {
-  version: 1;
-  detachedAt: string;
-  /** Overlay `HEAD` at the moment of detaching, for `overgit status` / `doctor`. */
-  overlayHead: string | null;
-  /** Paths the overlay owned when it was unmounted. */
-  paths: string[];
-  restored: string[];
-  removed: string[];
-  /**
-   * False while a detach is still running. The marker is written *before* any mutation so an
-   * interrupted detach is recognised as detached — otherwise the next `detach` would stage
-   * the base bytes it had already restored over the overlay's own content.
-   */
-  complete?: boolean;
-}
-
 export interface DetachOptions {
   /**
    * Replace a directory or special file occupying a path the overlay owns. Without it such
@@ -720,25 +721,17 @@ export async function detach(ctx: Context, opts: DetachOptions = {}): Promise<De
     // bytes it was meant to protect them from. Writing it first means a half-finished detach
     // is recognised as "already detached": `detach` becomes a no-op and `attach` rebuilds
     // everything from the overlay, which is exactly the recovery we want.
+    const claim: DetachMarker = {
+      version: 1,
+      detachedAt: new Date().toISOString(),
+      overlayHead: await ctx.overlay.revParse("HEAD"),
+      paths,
+      restored: [],
+      removed: [],
+      complete: false,
+    };
     await fs.mkdir(ctx.localDir, { recursive: true });
-    await writeFileAtomic(
-      marker,
-      enc.encode(
-        JSON.stringify(
-          {
-            version: 1,
-            detachedAt: new Date().toISOString(),
-            overlayHead: await ctx.overlay.revParse("HEAD"),
-            paths,
-            restored: [],
-            removed: [],
-            complete: false,
-          },
-          null,
-          2,
-        ) + "\n",
-      ),
-    );
+    await writeFileAtomic(marker, enc.encode(JSON.stringify(claim, null, 2) + "\n"));
 
     // Content first
     for (const p of paths) {

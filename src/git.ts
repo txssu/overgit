@@ -114,14 +114,10 @@ const READ_ONLY_SUBCOMMANDS = new Set([
 ]);
 
 /**
- * Environment variables that must not leak in from the caller. Git hooks export most of
- * these; inheriting them would point our commands at the wrong repository or make
- * pathspec parsing behave differently from what this module assumes.
- */
-/**
- * Variables that would silently retarget a git command at another repository. overgit can
- * be invoked from a git hook, where `GIT_DIR` and `GIT_INDEX_FILE` are exported — so every
- * spawn scrubs these, the terminal-attached ones in `cli/passthrough.ts` included.
+ * Variables that would silently retarget a git command at another repository, or change how
+ * it parses a pathspec. overgit can be invoked from a git hook, where `GIT_DIR` and
+ * `GIT_INDEX_FILE` are exported — so every spawn scrubs these, the terminal-attached ones in
+ * `cli/passthrough.ts` included.
  */
 export const SCRUBBED_ENV = [
   "GIT_DIR",
@@ -141,9 +137,10 @@ export const SCRUBBED_ENV = [
 ];
 
 /**
- * Scrubbed on top of that for plumbing only. A user's `GIT_EXTERNAL_DIFF` is a legitimate
- * setting for the commands that hand the terminal to git, but it would corrupt output this
- * module parses.
+ * Scrubbed on top of that for plumbing only, and deliberately not by `cli/passthrough.ts`:
+ * `overgit diff` is `git diff` with the overlay's git dir, so a difftool the user configured
+ * has to keep working there. The same variable would corrupt the output *this* module
+ * parses, which is why the two lists differ at all.
  */
 const SCRUBBED_ENV_PLUMBING = [...SCRUBBED_ENV, "GIT_EXTERNAL_DIFF", "GIT_DIFF_OPTS"];
 

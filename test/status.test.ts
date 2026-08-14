@@ -383,6 +383,10 @@ describe("overlay branch, upstream tracking and ahead/behind", () => {
     expect(s.syncInProgress).toBe(true);
     expect(s.detached).toBe(true);
     expect(s.problems).toBeGreaterThan(0);
+
+    // A marker too damaged to parse is still a marker: it must not read as "mounted", and
+    // it must not claim the detach was interrupted either — it says nothing about that.
+    expect(s.detach).toMatchObject({ detachedAt: "", overlayHead: null, complete: true });
   });
 });
 
