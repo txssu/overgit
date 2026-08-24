@@ -1,7 +1,7 @@
 /**
  * Bootstrap integration tests: `src/bootstrap.ts`, including detach/attach.
  *
- * Everything drives `bin/overgit` out of process, the way a user does, and never imports
+ * Everything drives `bin/overgit.ts` out of process, the way a user does, and never imports
  * `src/*` for an assertion. The properties under test, in rough order of how much they
  * matter:
  *
@@ -41,7 +41,7 @@ import { assertCleanSafe } from "./helpers/clean.ts";
 
 /* ==================================================================== the CLI runner */
 
-/** The argv `bin/overgit` is spawned with, so a hook shim can reproduce it. */
+/** The argv `bin/overgit.ts` is spawned with, so a hook shim can reproduce it. */
 export function cliArgv(): string[] {
   return [BUN_BIN, "--env-file=/dev/null", CLI_ENTRY];
 }

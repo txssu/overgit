@@ -4,12 +4,31 @@
   "description": "Layer one git repository on top of another in a single working directory",
   "type": "module",
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/txssu/overgit.git"
+  },
+  "homepage": "https://github.com/txssu/overgit#readme",
+  "bugs": {
+    "url": "https://github.com/txssu/overgit/issues"
+  },
+  "keywords": [
+    "git",
+    "overlay",
+    "skip-worktree",
+    "local-changes",
+    "vendoring",
+    "dotfiles",
+    "cli",
+    "bun"
+  ],
   "bin": {
-    "overgit": "./bin/overgit"
+    "overgit": "./bin/overgit.ts"
   },
   "files": [
     "bin",
     "src",
+    "skills",
     "README.md"
   ],
   "engines": {
@@ -18,7 +37,8 @@
   "scripts": {
     "test": "bun test",
     "typecheck": "tsc --noEmit",
-    "overgit": "bun run ./bin/overgit"
+    "overgit": "bun run ./bin/overgit.ts",
+    "build": "bun build --compile --minify ./bin/overgit.ts --outfile dist/overgit"
   },
   "devDependencies": {
     "@types/bun": "latest",

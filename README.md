@@ -22,10 +22,26 @@ work-tree. Plain git works on it: `git -C .overgit log`.
 
 ## Install
 
-Requires [Bun](https://bun.sh) ≥ 1.1 and a system `git` ≥ 2.30. Linux and macOS.
+Needs a system `git` ≥ 2.30. Linux and macOS.
+
+A standalone binary, nothing else required. Pick `linux-x64`, `linux-arm64`, `darwin-x64` or
+`darwin-arm64` from the [releases page](https://github.com/txssu/overgit/releases):
 
 ```sh
-git clone <this-repo> overgit
+curl -fsSL https://github.com/txssu/overgit/releases/latest/download/overgit-linux-x64 -o overgit
+install -m 755 overgit ~/.local/bin/
+```
+
+Or from npm, which needs [Bun](https://bun.sh) ≥ 1.1 at run time:
+
+```sh
+bun install -g overgit    # or: npm install -g overgit
+```
+
+Or from source:
+
+```sh
+git clone https://github.com/txssu/overgit.git
 cd overgit
 bun install
 bun link          # puts overgit in ~/.bun/bin

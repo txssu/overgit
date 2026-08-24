@@ -1,0 +1,90 @@
+# Cut a release from a `v*` tag: run the suite, compile a standalone binary per platform,
+# attach them to a GitHub Release, and publish the package to npm.
+#
+# npm needs an automation token in the NPM_TOKEN repository secret. Without it the npm job
+# reports what it skipped and the release itself still goes out.
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+  id-token: write
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+      - run: bun install --frozen-lockfile
+      - run: bun run typecheck
+      - run: bun test
+
+  build:
+    needs: test
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        target: [bun-linux-x64, bun-linux-arm64, bun-darwin-x64, bun-darwin-arm64]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+      - run: bun install --frozen-lockfile
+      - name: compile
+        run: |
+          name=overgit-${{ matrix.target }}
+          name=${name#overgit-bun-}
+          bun build --compile --minify --target=${{ matrix.target }} ./bin/overgit.ts --outfile "dist/overgit-$name"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.target }}
+          path: dist/*
+          if-no-files-found: error
+
+  github-release:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - name: checksums
+        run: cd dist && chmod +x overgit-* && sha256sum overgit-* > SHA256SUMS && cat SHA256SUMS
+      - name: create or update the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" dist/* --clobber
+          else
+            gh release create "$TAG" dist/* --title "$TAG" --generate-notes
+          fi
+
+  npm:
+    needs: test
+    runs-on: ubuntu-latest
+    env:
+      NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          registry-url: https://registry.npmjs.org
+      - name: the tag must match package.json
+        run: |
+          pkg=$(node -p 'require("./package.json").version')
+          tag=${GITHUB_REF_NAME#v}
+          [ "$pkg" = "$tag" ] || { echo "package.json says $pkg, tag says $tag" >&2; exit 1; }
+      - name: publish
+        if: env.NODE_AUTH_TOKEN != ''
+        run: npm publish --provenance --access public
+      - name: skipped
+        if: env.NODE_AUTH_TOKEN == ''
+        run: echo "::warning::NPM_TOKEN is not set; npm publish skipped. Add the secret and re-run this job."

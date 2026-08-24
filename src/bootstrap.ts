@@ -966,13 +966,18 @@ function shQuote(s: string): string {
  *
  * `command -v overgit` fails whenever overgit was installed as a shell alias, a function, or
  * run via `bun run` — and a hook that silently does nothing while reporting success is worse
- * than no hook. `process.execPath` is the bun binary that is running us and `bin/overgit` sits
- * next to `src/`, so together they are a self-contained command that works from any cwd.
+ * than no hook. `process.execPath` is the bun binary that is running us and `bin/overgit.ts`
+ * sits next to `src/`, so together they are a self-contained command that works from any cwd.
+ *
+ * In a standalone executable (`bun build --compile`) there is no script on disk:
+ * `import.meta.dir` points into the bundle's virtual filesystem. Then `process.execPath` is
+ * overgit itself and is the whole command.
  */
-function hookFallbackCommand(): { exe: string; script: string } {
+function hookFallbackCommand(): { exe: string; script?: string } {
+  const script = join(import.meta.dir, "..", "bin", "overgit.ts");
   return {
     exe: shQuote(process.execPath),
-    script: shQuote(join(import.meta.dir, "..", "bin", "overgit")),
+    script: existsSync(script) ? shQuote(script) : undefined,
   };
 }
 
@@ -993,7 +998,7 @@ const CREATED_BY_OVERGIT = "# created by overgit (`overgit hooks install`)";
  *    overlay (`git clone` runs `post-checkout` before there could possibly be one);
  *  - it must never `exit`, because a user's own code may follow the block.
  */
-function hookBlockLines(hook: HookName, fb: { exe: string; script: string }): string[] {
+function hookBlockLines(hook: HookName, fb: { exe: string; script?: string }): string[] {
   return [
     `# overgit re-applies the overlay after ${hook}. It never changes the exit status of`,
     "# your git command; problems are reported on stderr only.",
@@ -1008,8 +1013,10 @@ function hookBlockLines(hook: HookName, fb: { exe: string; script: string }): st
     "if command -v overgit >/dev/null 2>&1; then",
     "\tovergit_hook_run() { overgit \"$@\"; }",
     "\tovergit_hook_ok=1",
-    `elif [ -x ${fb.exe} ] && [ -f ${fb.script} ]; then`,
-    `\tovergit_hook_run() { ${fb.exe} ${fb.script} "$@"; }`,
+    fb.script === undefined
+      ? `elif [ -x ${fb.exe} ]; then`
+      : `elif [ -x ${fb.exe} ] && [ -f ${fb.script} ]; then`,
+    `\tovergit_hook_run() { ${fb.exe}${fb.script === undefined ? "" : ` ${fb.script}`} "$@"; }`,
     "\tovergit_hook_ok=1",
     "fi",
     'if [ "$overgit_hook_ok" = 1 ]; then',

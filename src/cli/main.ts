@@ -157,7 +157,7 @@ async function dispatch(argv: string[], slot: UiSlot): Promise<number> {
 }
 
 /**
- * Never throws. Sets `process.exitCode` and returns it, so `bin/overgit` is a two-liner and
+ * Never throws. Sets `process.exitCode` and returns it, so `bin/overgit.ts` is a two-liner and
  * a test can import nothing and still get the real behaviour by spawning it.
  */
 export async function main(argv: string[]): Promise<number> {

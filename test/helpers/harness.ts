@@ -6,7 +6,7 @@
  *   import { makeSandbox, overgit, expectOk, assertBaseClean, snapshotTree } from "./helpers/harness.ts";
  *
  * Principles:
- *  - tests spawn the real CLI (`bin/overgit`); nothing here imports `src/*`,
+ *  - tests spawn the real CLI (`bin/overgit.ts`); nothing here imports `src/*`,
  *  - every sandbox is hermetic (own HOME, own GIT_CONFIG_GLOBAL, no system config,
  *    no network — "remotes" are local bare repos),
  *  - sandbox dirs are realpath'd, because macOS `/tmp` is a symlink to `/private/tmp`
@@ -92,7 +92,7 @@ export { isPathInside, envForPath } from "./registry.ts";
 /** Repo root, realpath'd (matters on macOS). */
 export const PROJECT_ROOT = realpathSync(resolve(import.meta.dir, "..", ".."));
 /** The CLI entrypoint under test. Never imported — always spawned. */
-export const CLI_ENTRY = join(PROJECT_ROOT, "bin", "overgit");
+export const CLI_ENTRY = join(PROJECT_ROOT, "bin", "overgit.ts");
 /** The bun that is running these tests (more reliable than `bun` on PATH). */
 export const BUN_BIN = process.execPath;
 
@@ -156,7 +156,7 @@ function looksLikeMissingCli(r: CmdResult): boolean {
   return (
     /Cannot find module|Could not resolve|error: Module not found|ENOENT/.test(
       r.stderr,
-    ) && /bin\/overgit|src\//.test(r.stderr)
+    ) && /bin\/overgit\.ts|src\//.test(r.stderr)
   );
 }
 
@@ -164,7 +164,7 @@ function looksLikeMissingCli(r: CmdResult): boolean {
 export function expectOk(r: CmdResult): CmdResult {
   if (r.code === 0) return r;
   const extra = looksLikeMissingCli(r)
-    ? "\n  note: the CLI failed to load — bin/overgit or a module it imports is missing.\n" +
+    ? "\n  note: the CLI failed to load — bin/overgit.ts or a module it imports is missing.\n" +
       "        This is a build/ordering problem, not a behavioural failure."
     : "";
   throw new CmdFailure(

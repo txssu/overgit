@@ -7,7 +7,7 @@
  * that any of it happened.
  *
  * Deviation from the harness convention, declared: these drive `src/sync.ts` in process
- * rather than spawning `bin/overgit`, because sync's contract is the module API and the
+ * rather than spawning `bin/overgit.ts`, because sync's contract is the module API and the
  * plan/continue/abort states are easier to inspect there. Nothing is faked: real repos in
  * temp dirs, real `git`, real work-tree bytes, hermetic config, no network. The
  * interrupted-sync test does spawn a separate process, because that is the only honest way
@@ -861,7 +861,7 @@ describe("interrupted sync", () => {
 /* ------------------------------------------------------------------ the real CLI */
 
 /**
- * End-to-end through `bin/overgit`, the way every other suite runs. These do not re-prove the
+ * End-to-end through `bin/overgit.ts`, the way every other suite runs. These do not re-prove the
  * merge semantics above; they pin the wiring and the **frozen exit codes**: `0` done,
  * `3` conflicts or decisions pending, `4` a `--dry-run` that found work.
  */

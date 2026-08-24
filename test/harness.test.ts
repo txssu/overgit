@@ -181,9 +181,9 @@ describe("command running", () => {
 /* ====================================================================== CLI */
 
 describe("overgit() CLI spawn", () => {
-  test("bin/overgit exists and is what we spawn", () => {
+  test("bin/overgit.ts exists and is what we spawn", () => {
     expect(existsSync(CLI_ENTRY)).toBe(true);
-    expect(CLI_ENTRY).toBe(join(PROJECT_ROOT, "bin", "overgit"));
+    expect(CLI_ENTRY).toBe(join(PROJECT_ROOT, "bin", "overgit.ts"));
   });
 
   test("a failing command is a clean non-zero exit, never a hang", async () => {
