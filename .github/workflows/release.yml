@@ -3,11 +3,16 @@
 #
 # npm needs an automation token in the NPM_TOKEN repository secret. Without it the npm job
 # reports what it skipped and the release itself still goes out.
+#
+# Run from a tag only: `github.ref_name` is the tag and the release name.
 name: release
 
 on:
   push:
     tags: ["v*"]
+  # Manual re-run for an existing tag: pick the tag as the ref in the Actions UI, or
+  # `gh workflow run release.yml --ref v0.1.0`.
+  workflow_dispatch:
 
 permissions:
   contents: write
