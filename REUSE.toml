@@ -1,0 +1,9 @@
+version = 1
+
+# Every file is original work, licensed MIT. precedence = "closest" means a file's own
+# inline SPDX header (when present) wins over this wildcard.
+[[annotations]]
+path = "**"
+precedence = "closest"
+SPDX-FileCopyrightText = "2026 Eugene"
+SPDX-License-Identifier = "MIT"

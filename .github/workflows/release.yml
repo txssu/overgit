@@ -1,95 +1,110 @@
-# Cut a release from a `v*` tag: run the suite, compile a standalone binary per platform,
-# attach them to a GitHub Release, and publish the package to npm.
+# SPDX-FileCopyrightText: 2026 Eugene
 #
-# npm needs an automation token in the NPM_TOKEN repository secret. Without it the npm job
-# reports what it skipped and the release itself still goes out.
-#
-# Run from a tag only: `github.ref_name` is the tag and the release name.
-name: release
+# SPDX-License-Identifier: MIT
+
+name: Release
 
 on:
   push:
-    tags: ["v*"]
-  # Manual re-run for an existing tag: pick the tag as the ref in the Actions UI, or
-  # `gh workflow run release.yml --ref v0.1.0`.
-  workflow_dispatch:
+    tags:
+      - "v*"
 
 permissions:
-  contents: write
-  id-token: write
+  contents: read
 
 jobs:
-  test:
+  verify:
+    name: tag + typecheck + test
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: oven-sh/setup-bun@v2
-      - run: bun install --frozen-lockfile
-      - run: bun run typecheck
-      - run: bun test
+      - name: Check out repository
+        uses: actions/checkout@v7
 
-  build:
-    needs: test
-    runs-on: ubuntu-latest
-    strategy:
-      matrix:
-        target: [bun-linux-x64, bun-linux-arm64, bun-darwin-x64, bun-darwin-arm64]
-    steps:
-      - uses: actions/checkout@v4
-      - uses: oven-sh/setup-bun@v2
-      - run: bun install --frozen-lockfile
-      - name: compile
-        run: |
-          name=overgit-${{ matrix.target }}
-          name=${name#overgit-bun-}
-          bun build --compile --minify --target=${{ matrix.target }} ./bin/overgit.ts --outfile "dist/overgit-$name"
-      - uses: actions/upload-artifact@v4
+      - name: Set up Bun
+        uses: oven-sh/setup-bun@v2
         with:
-          name: ${{ matrix.target }}
-          path: dist/*
-          if-no-files-found: error
+          bun-version: latest
 
-  github-release:
-    needs: build
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/download-artifact@v4
-        with:
-          path: dist
-          merge-multiple: true
-      - name: checksums
-        run: cd dist && chmod +x overgit-* && sha256sum overgit-* > SHA256SUMS && cat SHA256SUMS
-      - name: create or update the release
-        env:
-          GH_TOKEN: ${{ github.token }}
-          TAG: ${{ github.ref_name }}
+      - name: Install dependencies
+        run: bun install
+
+      - name: Check the tag against package.json
         run: |
-          if gh release view "$TAG" >/dev/null 2>&1; then
-            gh release upload "$TAG" dist/* --clobber
-          else
-            gh release create "$TAG" dist/* --title "$TAG" --generate-notes
+          tag="${GITHUB_REF_NAME#v}"
+          pkg="$(bun -p "require('./package.json').version")"
+          if [ "$tag" != "$pkg" ]; then
+            echo "tag $GITHUB_REF_NAME does not match package.json version $pkg" >&2
+            exit 1
           fi
 
-  npm:
-    needs: test
+      - name: Type-check
+        run: bun run typecheck
+
+      - name: Run the test suite
+        run: bun test
+
+  publish:
+    name: Publish to npm
+    needs: verify
     runs-on: ubuntu-latest
-    env:
-      NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+    permissions:
+      contents: read
+      # Lets the runner mint the OIDC token npm exchanges for publish rights.
+      id-token: write
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - name: Check out repository
+        uses: actions/checkout@v7
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v7
         with:
-          node-version: 22
+          node-version: 24
           registry-url: https://registry.npmjs.org
-      - name: the tag must match package.json
+
+      # Trusted publishing needs npm 11.5.1 or newer, which is ahead of what
+      # some Node images bundle.
+      - name: Update npm
+        run: npm install -g npm@latest
+
+      # No token anywhere: npm trades the OIDC token for publish rights and
+      # attaches a provenance attestation on the way. The package ships its
+      # TypeScript sources, so there is nothing to build first.
+      - name: Publish
+        run: npm publish
+
+  release:
+    name: Build binaries and publish to Releases
+    needs: verify
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+
+      - name: Set up Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Install dependencies
+        run: bun install
+
+      # Bun cross-compiles every target from one runner.
+      - name: Compile a standalone binary per platform
         run: |
-          pkg=$(node -p 'require("./package.json").version')
-          tag=${GITHUB_REF_NAME#v}
-          [ "$pkg" = "$tag" ] || { echo "package.json says $pkg, tag says $tag" >&2; exit 1; }
-      - name: publish
-        if: env.NODE_AUTH_TOKEN != ''
-        run: npm publish --provenance --access public
-      - name: skipped
-        if: env.NODE_AUTH_TOKEN == ''
-        run: echo "::warning::NPM_TOKEN is not set; npm publish skipped. Add the secret and re-run this job."
+          mkdir -p dist
+          for target in linux-x64 linux-arm64 darwin-x64 darwin-arm64; do
+            bun build --compile --minify --target="bun-$target" ./bin/overgit.ts --outfile "dist/overgit-$target"
+          done
+          ./dist/overgit-linux-x64 --version
+          (cd dist && sha256sum overgit-* > SHA256SUMS && cat SHA256SUMS)
+
+      - name: Publish GitHub Release with the binaries attached
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "${{ github.ref_name }}" \
+            dist/overgit-* dist/SHA256SUMS \
+            --title "${{ github.ref_name }}" \
+            --generate-notes

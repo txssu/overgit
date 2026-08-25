@@ -22,6 +22,9 @@
     "cli",
     "bun"
   ],
+  "publishConfig": {
+    "access": "public"
+  },
   "bin": {
     "overgit": "./bin/overgit.ts"
   },
@@ -29,7 +32,10 @@
     "bin",
     "src",
     "skills",
-    "README.md"
+    "README.md",
+    "LICENSE",
+    "LICENSES",
+    "REUSE.toml"
   ],
   "engines": {
     "bun": ">=1.1.0"

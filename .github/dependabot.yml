@@ -1,0 +1,31 @@
+# SPDX-FileCopyrightText: 2026 Eugene
+#
+# SPDX-License-Identifier: MIT
+
+# Keep the GitHub Actions used by CI current.
+version: 2
+updates:
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+    commit-message:
+      prefix: "ci"
+    groups:
+      actions:
+        patterns:
+          - "*"
+
+  # No runtime dependencies, so this tracks the dev toolchain (TypeScript, @types/bun).
+  - package-ecosystem: "npm"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+    commit-message:
+      prefix: "deps"
+    groups:
+      dev-dependencies:
+        patterns:
+          - "*"

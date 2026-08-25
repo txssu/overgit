@@ -1,0 +1,23 @@
+# SPDX-FileCopyrightText: 2026 Eugene
+#
+# SPDX-License-Identifier: MIT
+
+name: REUSE Compliance
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  reuse:
+    name: REUSE lint
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+
+      - name: Verify REUSE compliance
+        uses: fsfe/reuse-action@v6
