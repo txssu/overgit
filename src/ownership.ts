@@ -1299,10 +1299,9 @@ async function applyStateInner(ctx: Context, opts?: ApplyOptions): Promise<Apply
   // The exclude block is what keeps `add` paths invisible; regenerate it last so it
   // reflects the manifest we just materialised.
   if (dryRun) {
-    const { desiredExcludeLines } = await import("./exclude.ts");
-    const { currentExcludeBlock } = await import("./exclude.ts");
+    const { currentExcludeBlock, wantedExcludeLines } = await import("./exclude.ts");
     const current = await currentExcludeBlock(ctx);
-    const want = desiredExcludeLines(s.manifest, new Set(s.baseIndex.keys()));
+    const want = await wantedExcludeLines(ctx, s.manifest, new Set(s.baseIndex.keys()));
     if (current === null || current.length !== want.length || current.some((l, i) => l !== want[i])) {
       note(".git/info/exclude", "exclude", "managed block is out of date (dry run)");
     }

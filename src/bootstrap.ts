@@ -61,15 +61,90 @@ const enc = new TextEncoder();
 /** Prefix of the scratch directories `cloneOverlay` clones into. */
 const CLONE_TMP_PREFIX = ".clone-";
 
-/** Overlay config that makes `.overgit/.git` an ordinary, relocatable repository. */
+/**
+ * Overlay config that makes `.overgit/.git` an ordinary, relocatable repository.
+ *
+ * `core.worktree` is relative to the git dir, so `../..` from `<root>/.overgit/.git` is
+ * `<root>` — the whole tree can be moved or renamed and the overlay still works. A *linked*
+ * overlay worktree is the exception, see `overlayCoreWorktreeWant`.
+ */
 const OVERLAY_CONFIG: ReadonlyArray<readonly [string, string]> = [
-  // `core.worktree` is relative to the git dir, so `../..` from `<root>/.overgit/.git`
-  // is `<root>` — the whole tree can be moved or renamed and the overlay still works.
   ["core.bare", "false"],
   ["core.worktree", "../.."],
   // The overlay's work-tree is full of the *base's* files. They are not its business.
   ["status.showUntrackedFiles", "no"],
 ];
+
+/** The two keys git keeps per work-tree once `extensions.worktreeConfig` is on. */
+const PER_WORKTREE_KEYS: ReadonlySet<string> = new Set(["core.bare", "core.worktree"]);
+
+/** A config *scope* flag: which file `git config` reads and writes. */
+export type OverlayConfigScope = "--local" | "--worktree";
+
+/**
+ * Where `core.bare` and `core.worktree` live for this overlay.
+ *
+ * Once the overlay has linked worktrees (`overgit worktree add`), each of them needs its
+ * own `core.worktree`, and git's mechanism for that is `extensions.worktreeConfig`: the two
+ * keys move out of the shared `config` into a per-worktree `config.worktree`. Before that
+ * they are ordinary `--local` settings, and nothing about a plain overlay changes.
+ */
+export async function overlayCoreScope(ctx: Context): Promise<OverlayConfigScope> {
+  const r = await ctx.overlay.run(["config", "--local", "--get", "extensions.worktreeConfig"], {
+    allowFailure: true,
+  });
+  return r.code === 0 && r.stdout.trim() === "true" ? "--worktree" : "--local";
+}
+
+/**
+ * The `core.worktree` this overlay needs.
+ *
+ * Relative `../..` for an ordinary overlay. For a linked overlay worktree the git dir is
+ * `<main>/.overgit/.git/worktrees/<name>`, which no relative path reaches `<root>` from
+ * stably, so it is the absolute work-tree root — measured on git 2.55: git resolves a
+ * relative per-worktree `core.worktree` against that `worktrees/<name>` dir. A linked
+ * worktree is pinned by absolute paths anyway (its `.git` file is one), and
+ * `git worktree repair` is the tool for moving it.
+ */
+export function overlayCoreWorktreeWant(ctx: Context): string {
+  return ctx.overlayIsLinked ? ctx.root : "../..";
+}
+
+function scopeFor(key: string, coreScope: OverlayConfigScope): OverlayConfigScope {
+  return PER_WORKTREE_KEYS.has(key) ? coreScope : "--local";
+}
+
+/** The value git sees for `key` in this overlay, from the scope overgit keeps it in. */
+export async function readOverlayConfig(ctx: Context, key: string): Promise<string | null> {
+  const scope = scopeFor(key, await overlayCoreScope(ctx));
+  const r = await ctx.overlay.run(["config", scope, "--get", key], { allowFailure: true });
+  if (r.code !== 0) return null;
+  return r.stdout.replace(/\n$/, "");
+}
+
+/** Set `key` in the scope overgit keeps it in. */
+export async function writeOverlayConfig(ctx: Context, key: string, value: string): Promise<void> {
+  const scope = scopeFor(key, await overlayCoreScope(ctx));
+  await ctx.overlay.run(["config", scope, key, value]);
+}
+
+/**
+ * Turn on `extensions.worktreeConfig` for the overlay and move `core.bare` and
+ * `core.worktree` into the *main* overlay's `config.worktree`, where git expects them once
+ * the extension is on. Idempotent. Callable from any of the overlay's worktrees: the main
+ * one is addressed through the common dir.
+ */
+export async function enableOverlayWorktreeConfig(ctx: Context): Promise<boolean> {
+  if ((await overlayCoreScope(ctx)) === "--worktree") return false;
+  await ctx.overlay.run(["config", "--local", "extensions.worktreeConfig", "true"]);
+  const main = new Git({ cwd: ctx.root, gitDir: ctx.overlayCommonDir });
+  for (const key of PER_WORKTREE_KEYS) {
+    const want = key === "core.worktree" ? "../.." : "false";
+    await main.run(["config", "--worktree", key, want]);
+    await ctx.overlay.run(["config", "--local", "--unset-all", key], { allowFailure: true });
+  }
+  return true;
+}
 
 /* ------------------------------------------------------------------ tiny fs helpers */
 
@@ -200,13 +275,29 @@ function assertBranchName(git: Git, name: string): Promise<void> {
  */
 export async function ensureOverlayConfig(ctx: Context): Promise<string[]> {
   const changed: string[] = [];
-  for (const [key, want] of OVERLAY_CONFIG) {
-    const cur = await ctx.overlay.run(["config", "--local", "--get", key], {
-      allowFailure: true,
-    });
+  // A linked overlay worktree cannot work without per-worktree config: its `core.worktree`
+  // is not the main one's. Someone may have linked it by hand with plain `git worktree add`.
+  if (ctx.overlayIsLinked && (await enableOverlayWorktreeConfig(ctx))) {
+    changed.push("extensions.worktreeConfig");
+  }
+  const coreScope = await overlayCoreScope(ctx);
+  for (const [key, def] of OVERLAY_CONFIG) {
+    const want = key === "core.worktree" ? overlayCoreWorktreeWant(ctx) : def;
+    const scope = scopeFor(key, coreScope);
+    const cur = await ctx.overlay.run(["config", scope, "--get", key], { allowFailure: true });
     if (cur.code === 0 && cur.stdout.trim() === want) continue;
-    await ctx.overlay.run(["config", "--local", key, want]);
+    await ctx.overlay.run(["config", scope, key, want]);
     changed.push(key);
+  }
+  if (coreScope === "--worktree") {
+    // With the extension on, a `core.worktree` left in the shared config is at best ignored
+    // and at worst applied to every worktree. Neither is wanted.
+    for (const key of PER_WORKTREE_KEYS) {
+      const stray = await ctx.overlay.run(["config", "--local", "--get", key], { allowFailure: true });
+      if (stray.code !== 0) continue;
+      await ctx.overlay.run(["config", "--local", "--unset-all", key]);
+      changed.push(`${key} (shared copy)`);
+    }
   }
   return changed;
 }
@@ -531,7 +622,7 @@ export async function cloneOverlay(opts: CloneOptions): Promise<CloneResult> {
  * the merged tree". Runs on both the fresh-clone and the already-present paths, so an
  * interrupted first run is finished by the second one instead of wedging it.
  */
-async function finishBootstrap(probe: Context): Promise<{
+export async function finishBootstrap(probe: Context): Promise<{
   ctx: Context;
   apply: ApplyReport;
   manifest: ManifestState;

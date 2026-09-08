@@ -64,3 +64,16 @@ Two things that no command can undo:
   it is unrepresentable in a gitignore line. Overrides and whiteouts of such files are fine.
 
 Stacking overlays and paths inside a submodule are not supported and are refused by name.
+
+## Worktrees
+
+`overgit worktree add <path> [-b <branch>]` is `git worktree add` with the overlay carried
+along: the new tree's `.overgit` is a linked worktree of the overlay repository, on an overlay
+branch of the same name. Use it instead of plain `git worktree add` whenever the user wants
+their overlay in the second checkout. `overgit worktree list` shows which trees have one;
+`overgit worktree remove <path>` takes one down and refuses while its overlay has uncommitted
+changes. Every other overgit command works inside a linked work-tree unchanged.
+
+The base has one `info/exclude` for all of its work-trees, so a path `overgit add`ed in any
+work-tree is ignored by the base in every one of them. Mention this when the user creates the
+same path by hand in another tree: `git clean -xfd` there would delete it.

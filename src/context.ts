@@ -54,6 +54,15 @@ export interface Context {
    * Equal to `overlayGitDir` when there is no overlay at all.
    */
   overlayGitDirReal: string;
+  /**
+   * The overlay's git **common** dir: where its `config`, refs and `info/exclude` live.
+   * Equal to `overlayGitDirReal` for an ordinary overlay. Differs when the overlay is a
+   * linked worktree (`overgit worktree add`), where `overlayGitDirReal` is
+   * `<main>/.overgit/.git/worktrees/<name>` and this is `<main>/.overgit/.git`.
+   */
+  overlayCommonDir: string;
+  /** True when the overlay is a linked worktree of another work-tree's overlay. */
+  overlayIsLinked: boolean;
   localDir: string;
   manifestPath: string;
   base: Git;
@@ -103,6 +112,28 @@ export async function resolveOverlayGitDir(overlayGitDir: string): Promise<strin
   const target = m[1]!;
   const abs = isAbsolute(target) ? target : resolve(dirname(overlayGitDir), target);
   return (await isDir(abs)) && (await isFile(join(abs, "HEAD"))) ? abs : null;
+}
+
+/**
+ * The common dir of the git dir at `gitDirReal`: what its `commondir` file names, resolved
+ * against it, or `gitDirReal` itself when there is no such file. This is how git resolves
+ * it too, so no subprocess is needed.
+ */
+async function commonDirOf(gitDirReal: string): Promise<string> {
+  let text: string;
+  try {
+    text = await readFile(join(gitDirReal, "commondir"), "utf8");
+  } catch {
+    return gitDirReal;
+  }
+  const target = text.trim();
+  if (target === "") return gitDirReal;
+  const abs = isAbsolute(target) ? target : resolve(gitDirReal, target);
+  try {
+    return await realpath(abs);
+  } catch {
+    return abs;
+  }
 }
 
 /**
@@ -248,6 +279,7 @@ export async function discover(
 
   const overlayReal = await resolveOverlayGitDir(overlayGitDir);
   const hasOverlay = overlayReal !== null;
+  const overlayCommonDir = overlayReal === null ? overlayGitDir : await commonDirOf(overlayReal);
   if (opts?.requireOverlay && !hasOverlay) {
     throw new OvergitError("NO_OVERLAY", `no overlay in ${root}`, {
       hint: "run `overgit init` to create one, or `overgit clone <url>` to fetch one",
@@ -272,12 +304,67 @@ export async function discover(
     overgitDir,
     overlayGitDir,
     overlayGitDirReal: overlayReal ?? overlayGitDir,
+    overlayCommonDir,
+    overlayIsLinked: overlayReal !== null && overlayCommonDir !== overlayReal,
     localDir,
     manifestPath,
     base,
     overlay,
     hasOverlay,
   };
+}
+
+/* ------------------------------------------------- the base's worktrees */
+
+export interface BaseWorktree {
+  /** realpath of the work-tree root. */
+  root: string;
+  /** True for the main work-tree, the one whose `.git` is a directory. */
+  main: boolean;
+  /** True for the work-tree `ctx` was discovered in. */
+  current: boolean;
+  /** `refs/heads/...` when a branch is checked out, `null` when HEAD is detached. */
+  branch: string | null;
+}
+
+/**
+ * Every work-tree of the base, main first, as `git worktree list` reports them. Entries git
+ * marks prunable (their directory is gone) are left out: there is nothing to read there.
+ *
+ * This is what makes the base's `info/exclude` — one file shared by all of its work-trees —
+ * come out right: `exclude.ts` merges every sibling's manifest into the managed block.
+ */
+export async function listBaseWorktrees(ctx: Context): Promise<BaseWorktree[]> {
+  const r = await ctx.base.run(["worktree", "list", "--porcelain"]);
+  const out: BaseWorktree[] = [];
+  let cur: { path: string; branch: string | null; prunable: boolean; bare: boolean } | null = null;
+  const flush = async (): Promise<void> => {
+    if (cur === null) return;
+    const rec = cur;
+    cur = null;
+    if (rec.prunable || rec.bare) return;
+    let root: string;
+    try {
+      root = await realpath(rec.path);
+    } catch {
+      return;
+    }
+    out.push({ root, main: out.length === 0, current: root === ctx.root, branch: rec.branch });
+  };
+  for (const line of r.stdout.split("\n")) {
+    if (line.startsWith("worktree ")) {
+      await flush();
+      cur = { path: line.slice("worktree ".length), branch: null, prunable: false, bare: false };
+    } else if (cur !== null && line.startsWith("branch ")) {
+      cur.branch = line.slice("branch ".length);
+    } else if (cur !== null && line.startsWith("prunable")) {
+      cur.prunable = true;
+    } else if (cur !== null && line === "bare") {
+      cur.bare = true;
+    }
+  }
+  await flush();
+  return out;
 }
 
 /* ----------------------------------------- machine-local state files */

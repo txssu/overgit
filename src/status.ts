@@ -14,7 +14,7 @@ import type { StatusEntry } from "./git.ts";
 import { blobOidLike } from "./git.ts";
 import type { Entry, Manifest } from "./manifest.ts";
 import { ownedPaths, readManifest } from "./manifest.ts";
-import { currentExcludeBlock, desiredExcludeLines } from "./exclude.ts";
+import { currentExcludeBlock, wantedExcludeLines } from "./exclude.ts";
 
 import { lstat, readFile, readlink } from "node:fs/promises";
 import { join } from "node:path";
@@ -308,7 +308,7 @@ export async function computeStatus(ctx: Context): Promise<MergedStatus> {
 
   // Exclude block drift is cheap to check and is the other half of invisibility.
   const currentBlock = await currentExcludeBlock(ctx);
-  const wantBlock = desiredExcludeLines(manifest);
+  const wantBlock = await wantedExcludeLines(ctx, manifest);
   if (
     currentBlock === null ||
     currentBlock.length !== wantBlock.length ||

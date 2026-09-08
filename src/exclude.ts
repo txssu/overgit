@@ -16,12 +16,14 @@
  *     be hidden from the base at all — `ownership.ts` refuses them for `add`.
  */
 
+import { join } from "node:path";
 import { OvergitError } from "./errors.ts";
-import type { Context } from "./context.ts";
+import { detachMarkerPath, listBaseWorktrees, type Context } from "./context.ts";
 import type { Manifest } from "./manifest.ts";
-import { pathsOfKind, ownedPaths, comparePaths } from "./manifest.ts";
+import { parseManifest, pathsOfKind, ownedPaths, comparePaths } from "./manifest.ts";
 import { gitignoreEscape } from "./paths.ts";
-import { writeFileAtomic } from "./files.ts";
+import { pathExists, writeFileAtomic } from "./files.ts";
+import { Git } from "./git.ts";
 
 /**
  * Marker strings, byte-exact. Do not reformat: `doctor` finds the managed block by matching
@@ -49,10 +51,19 @@ const dec = new TextDecoder("utf-8");
 /* ------------------------------------------------------------------ pure block editing */
 
 /**
- * The lines the base's managed block should contain for `m`: `/.overgit/` first, then one
- * anchored, escaped pattern per `add` path, sorted byte-wise.
+ * The lines the base's managed block should contain for `m` alone: `/.overgit/` first, then
+ * one anchored, escaped pattern per `add` path, sorted byte-wise.
+ *
+ * "Alone" is the catch: when the base has several work-trees they all share this one
+ * exclude file, and the block must cover every one of them. `wantedExcludeLines` is the
+ * function that knows that; this one is the single-work-tree building block it is made of.
  */
 export function desiredExcludeLines(m: Manifest, baseTracks?: ReadonlySet<string>): string[] {
+  return [OVERGIT_DIR_PATTERN, ...desiredExcludePaths(m, baseTracks).map((p) => gitignoreEscape(p))];
+}
+
+/** The repo paths `m` needs an exclude line for, unescaped and sorted. */
+function desiredExcludePaths(m: Manifest, baseTracks?: ReadonlySet<string>): string[] {
   // Hide by the mechanism that matches the base's *current* reality, not by the manifest's
   // historical kind. The two mechanisms are complementary and each only works in one case:
   // `.git/info/exclude` hides untracked paths and is completely inert for tracked ones,
@@ -75,7 +86,55 @@ export function desiredExcludeLines(m: Manifest, baseTracks?: ReadonlySet<string
     baseTracks === undefined
       ? pathsOfKind(m, "add")
       : ownedPaths(m).filter((p) => !baseTracks.has(p));
-  return [OVERGIT_DIR_PATTERN, ...owned.sort(comparePaths).map((p) => gitignoreEscape(p))];
+  return owned.sort(comparePaths);
+}
+
+/**
+ * The lines the base's managed block should contain, counting every work-tree of the base.
+ *
+ * `info/exclude` lives in the base's common git dir, so a linked worktree (`git worktree
+ * add`, or `overgit worktree add`) shares it with the main one and with every other. Git has
+ * no per-work-tree exclude file. So the block is the *union*: this work-tree's lines from
+ * `m`, plus each sibling's from its own manifest, read straight off its disk. A sibling
+ * that is detached contributes nothing, like its own `detach` would have written; one whose
+ * manifest is missing or unreadable contributes nothing either — its own `doctor` is the
+ * place that complains about it, and this work-tree must not be blocked by it.
+ *
+ * The price, spelled out in `overgit help worktree`: a path added in one work-tree is
+ * ignored in all of them.
+ */
+export async function wantedExcludeLines(
+  ctx: Context,
+  m: Manifest,
+  baseTracks?: ReadonlySet<string>,
+): Promise<string[]> {
+  const paths = new Set(desiredExcludePaths(m, baseTracks));
+  for (const wt of await listBaseWorktrees(ctx)) {
+    if (wt.current) continue;
+    for (const p of await siblingExcludePaths(wt.root)) paths.add(p);
+  }
+  return [OVERGIT_DIR_PATTERN, ...[...paths].sort(comparePaths).map((p) => gitignoreEscape(p))];
+}
+
+/** What the overlay in the base work-tree at `root` needs hidden, or nothing. */
+async function siblingExcludePaths(root: string): Promise<string[]> {
+  const overgitDir = join(root, ".overgit");
+  if (!(await pathExists(join(overgitDir, ".git")))) return [];
+  if (await pathExists(join(overgitDir, "local", "detached"))) return [];
+  const manifestPath = join(overgitDir, "manifest.json");
+  let m: Manifest;
+  try {
+    m = parseManifest(await Bun.file(manifestPath).text(), manifestPath);
+  } catch {
+    return [];
+  }
+  if (ownedPaths(m).length === pathsOfKind(m, "add").length) return desiredExcludePaths(m);
+  // An override or whiteout that upstream has since dropped needs a line too (see
+  // `desiredExcludeLines`), and only that work-tree's index knows.
+  const tracks = new Set(
+    (await new Git({ cwd: root }).lsFiles()).filter((e) => e.stage === 0).map((e) => e.path),
+  );
+  return desiredExcludePaths(m, tracks);
 }
 
 interface RawLine {
@@ -266,9 +325,10 @@ function baseExcludePath(ctx: Context): string {
 }
 
 function overlayExcludePath(ctx: Context): string {
-  // The resolved dir, not `.overgit/.git`: when that is a gitfile there is no `info/`
-  // beneath it, and opening the path gives ENOTDIR.
-  return `${ctx.overlayGitDirReal}/info/exclude`;
+  // The common dir, not `.overgit/.git`: when that is a gitfile there is no `info/`
+  // beneath it (opening the path gives ENOTDIR), and for a linked overlay worktree git reads
+  // `info/exclude` from the main overlay's git dir, never from `worktrees/<name>/`.
+  return `${ctx.overlayCommonDir}/info/exclude`;
 }
 
 /**
@@ -286,7 +346,7 @@ export async function syncExcludeBlock(
   // exclude block reflects reality rather than the manifest's idea of it.
   const tracks =
     baseTracks ?? new Set((await ctx.base.lsFiles()).filter((e) => e.stage === 0).map((e) => e.path));
-  const result = applyManagedBlock(before, desiredExcludeLines(m, tracks));
+  const result = applyManagedBlock(before, await wantedExcludeLines(ctx, m, tracks));
   if (!result.changed) return { changed: false };
   await writeFileAtomic(path, result.bytes);
   return { changed: true };

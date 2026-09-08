@@ -22,6 +22,7 @@ import {
 import { addCommand, restoreCommand, rmCommand } from "./commands/ownership.ts";
 import { applyCommand, detachCommand, doctorCommand } from "./commands/state.ts";
 import { resolveCommand, syncCommand } from "./commands/sync.ts";
+import { worktreeCommand } from "./commands/worktree.ts";
 
 export interface Group {
   title: string;
@@ -29,7 +30,7 @@ export interface Group {
 }
 
 export const GROUPS: Group[] = [
-  { title: "starting out", commands: [initCommand, cloneCommand] },
+  { title: "starting out", commands: [initCommand, cloneCommand, worktreeCommand] },
   { title: "what the overlay owns", commands: [addCommand, rmCommand, restoreCommand, listCommand, whichCommand] },
   { title: "looking at it", commands: [statusCommand, diffCommand, logCommand] },
   { title: "the overlay's history", commands: [commitCommand, pushCommand, pullCommand, fetchCommand] },
