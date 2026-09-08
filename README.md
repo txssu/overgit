@@ -139,6 +139,26 @@ A conflict blocks nothing else. Every other path still syncs, `status` and `doct
 working, and the base stays clean even with conflict markers sitting in the work-tree.
 Edit the file, then `overgit resolve <path>` and `overgit sync --continue`.
 
+## Worktrees
+
+`overgit worktree add` is `git worktree add` with the overlay carried along:
+
+```console
+$ overgit worktree add ../app-hotfix -b hotfix
+created the work-tree ../app-hotfix on branch hotfix, overlay on branch hotfix
+applied 3 paths:
+  ...
+```
+
+One base repository, one overlay repository, two work-trees. The new tree's `.overgit` is a
+linked worktree of the overlay, on its own overlay branch, so `overgit commit` and `push`
+work from either side. `overgit worktree list` shows what each tree has, `overgit worktree
+remove` takes one down and refuses while its overlay has uncommitted changes.
+
+The base's `.git/info/exclude` is one file for all of its work-trees, so overgit writes
+the union of every tree's overlay-added paths into it. A file you `overgit add` in one
+work-tree is ignored by the base in all of them.
+
 ## Known limitations
 
 They are real, so here is the whole list.
@@ -152,6 +172,7 @@ They are real, so here is the whole list.
 | binary files cannot be three-way merged | git refuses when any of the three sides is binary | surfaced as a decision: `--keep` / `--take-upstream` |
 | work-tree commands refuse while the base has `core.sparseCheckout` | git would clear the `skip-worktree` bits and leak every override | disable sparse checkout, then `overgit doctor --fix` |
 | `overgit hooks install` skips hooks written in another language | appending shell to a Python hook would break it | add `overgit apply \|\| true` to it by hand |
+| an `add` in one work-tree is ignored by the base in every other work-tree | git has one `info/exclude` per repository, not per work-tree | none; `overgit help worktree` spells out the consequence |
 | one overlay per work-tree | stacking is not supported | none |
 | submodules are not overlaid | overgit refuses paths inside a submodule | none |
 | the base's index bits are shared state | a `skip-worktree` bit you set yourself is reported as unowned, never adopted | none |

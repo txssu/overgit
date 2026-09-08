@@ -44,7 +44,7 @@ import {
   BEGIN_MARKER,
   OVERLAY_EXCLUDE_LINES,
   currentExcludeBlock,
-  desiredExcludeLines,
+  wantedExcludeLines,
   ensureOverlayExcludes,
   readManagedBlock,
   syncExcludeBlock,
@@ -183,8 +183,17 @@ function quote(p: string): string {
  * of `../`.
  */
 function overlayRel(ctx: Context, ...parts: string[]): string {
-  const rel = pathRelative(ctx.root, ctx.overlayGitDirReal).split(sep).join("/");
-  const base = rel.startsWith("../") ? ctx.overlayGitDirReal : rel;
+  return relToRoot(ctx, ctx.overlayCommonDir, parts);
+}
+
+/** Like `overlayRel`, for what lives in a linked overlay's own `worktrees/<name>/` dir. */
+function overlayWorktreeRel(ctx: Context, ...parts: string[]): string {
+  return relToRoot(ctx, ctx.overlayGitDirReal, parts);
+}
+
+function relToRoot(ctx: Context, dir: string, parts: string[]): string {
+  const rel = pathRelative(ctx.root, dir).split(sep).join("/");
+  const base = rel.startsWith("../") ? dir : rel;
   return parts.length > 0 ? `${base}/${parts.join("/")}` : base;
 }
 
@@ -368,9 +377,8 @@ interface ConfigProblem {
 }
 
 async function overlayConfigValue(ctx: Context, key: string): Promise<string | null> {
-  const r = await ctx.overlay.run(["config", "--local", "--get", key], { allowFailure: true });
-  if (r.code !== 0) return null;
-  return r.stdout.replace(/\n$/, "");
+  const { readOverlayConfig } = await import("./bootstrap.ts");
+  return readOverlayConfig(ctx, key);
 }
 
 /**
@@ -381,7 +389,27 @@ async function overlayConfigValue(ctx: Context, key: string): Promise<string | n
  */
 async function checkOverlayConfig(ctx: Context): Promise<ConfigProblem[]> {
   const out: ConfigProblem[] = [];
+  const { overlayCoreScope, overlayCoreWorktreeWant } = await import("./bootstrap.ts");
   const cfgPath = overlayRel(ctx, "config");
+  // Once the overlay has linked worktrees, `core.*` sit in a per-worktree file.
+  const coreScope = await overlayCoreScope(ctx);
+  const corePath =
+    coreScope === "--worktree" ? overlayWorktreeRel(ctx, "config.worktree") : cfgPath;
+  const wantWorktree = overlayCoreWorktreeWant(ctx);
+
+  if (ctx.overlayIsLinked && coreScope === "--local") {
+    out.push({
+      key: "extensions.worktreeConfig",
+      want: "true",
+      problem: mk(
+        "overlay-config-broken",
+        "error",
+        "the overlay is a linked worktree but the overlay repo has no extensions.worktreeConfig, so it cannot have a core.worktree of its own",
+        "run `overgit doctor --fix` to enable it and move core.worktree into per-worktree config",
+        { path: cfgPath, fixable: true },
+      ),
+    });
+  }
 
   const worktree = await overlayConfigValue(ctx, "core.worktree");
   // git resolves a relative `core.worktree` against the real git dir, so a gitfile overlay
@@ -390,18 +418,20 @@ async function checkOverlayConfig(ctx: Context): Promise<ConfigProblem[]> {
   if (worktree === null || resolved !== ctx.root) {
     out.push({
       key: "core.worktree",
-      want: "../..",
+      want: wantWorktree,
       problem: mk(
         "overlay-config-broken",
         "error",
         worktree === null
           ? "the overlay repo has no core.worktree, so plain git cannot find the work-tree"
           : `the overlay repo's core.worktree is ${quote(worktree)}, which resolves to ${resolved} instead of ${ctx.root}`,
-        "run `overgit doctor --fix` to reset it to `../..` (relative, so the project directory can be renamed)",
-        { path: cfgPath, fixable: true },
+        ctx.overlayIsLinked
+          ? `run \`overgit doctor --fix\` to set it to ${ctx.root} (a linked worktree is pinned to its absolute path; \`git worktree repair\` is how one moves)`
+          : "run `overgit doctor --fix` to reset it to `../..` (relative, so the project directory can be renamed)",
+        { path: corePath, fixable: true },
       ),
     });
-  } else if (worktree.startsWith("/")) {
+  } else if (worktree.startsWith("/") && !ctx.overlayIsLinked) {
     out.push({
       key: "core.worktree",
       want: "../..",
@@ -424,8 +454,8 @@ async function checkOverlayConfig(ctx: Context): Promise<ConfigProblem[]> {
         "overlay-config-broken",
         "error",
         `the overlay repo has core.bare=${bare ?? "(unset)"}; it must be false or git refuses to use the work-tree`,
-        `run \`overgit doctor --fix\` to set \`core.bare=false\` in ${cfgPath}`,
-        { path: cfgPath, fixable: true },
+        `run \`overgit doctor --fix\` to set \`core.bare=false\` in ${corePath}`,
+        { path: corePath, fixable: true },
       ),
     });
   }
@@ -445,7 +475,7 @@ async function checkOverlayConfig(ctx: Context): Promise<ConfigProblem[]> {
     });
   }
 
-  const excludePath = join(ctx.overlayGitDirReal, "info", "exclude");
+  const excludePath = join(ctx.overlayCommonDir, "info", "exclude");
   const bytes = await fs.readFile(excludePath).catch(() => null);
   const block = bytes === null ? null : readManagedBlock(new Uint8Array(bytes));
   const wantLines = OVERLAY_EXCLUDE_LINES;
@@ -1184,7 +1214,7 @@ function gitignoreProblem(hit: IgnoreHit): Problem {
 async function checkExcludeBlock(ctx: Context, manifest: Manifest): Promise<Problem[]> {
   const out: Problem[] = [];
   const excludePath = join(ctx.baseGitDir, "info", "exclude");
-  const want = desiredExcludeLines(manifest);
+  const want = await wantedExcludeLines(ctx, manifest);
 
   const raw = await fs.readFile(excludePath, "utf8").catch(() => "");
   const blockCount = raw.split("\n").filter((l) => l.replace(/\r$/, "") === BEGIN_MARKER).length;
@@ -1382,9 +1412,11 @@ async function repairRound(ctx: Context, problems: Problem[]): Promise<RoundResu
 
   // 2. the overlay repo itself, before anything reads through it
   if (byId.has("overlay-config-broken")) {
+    const { enableOverlayWorktreeConfig, writeOverlayConfig } = await import("./bootstrap.ts");
     for (const c of await checkOverlayConfig(ctx)) {
       if (c.key === "info/exclude") await ensureOverlayExcludes(ctx);
-      else await ctx.overlay.run(["config", "--local", c.key, c.want!], { allowFailure: true });
+      else if (c.key === "extensions.worktreeConfig") await enableOverlayWorktreeConfig(ctx);
+      else await writeOverlayConfig(ctx, c.key, c.want!).catch(() => {});
     }
     // Re-check rather than trusting the write: a read-only config file must not be
     // reported as fixed. A problem counts as fixed when its exact message is gone.
